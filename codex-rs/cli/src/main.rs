@@ -1054,6 +1054,16 @@ async fn cli_main(
     arg0_paths: Arg0DispatchPaths,
     remote_control_disabled: bool,
 ) -> anyhow::Result<()> {
+    // Keep the executable and subcommand spelling as `codex` for compatibility,
+    // while identifying this distribution as Codefx in version output.
+    if let Some(version_flag) = std::env::args_os().nth(1)
+        && std::env::args_os().nth(2).is_none()
+        && (version_flag == "--version" || version_flag == "-V")
+    {
+        println!("codefx {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     let MultitoolCli {
         config_overrides: mut root_config_overrides,
         feature_toggles,

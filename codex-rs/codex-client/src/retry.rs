@@ -48,7 +48,7 @@ pub fn backoff(base: Duration, attempt: u64) -> Duration {
     let millis = base.as_millis() as u64;
     let raw = millis.saturating_mul(exp);
     let jitter: f64 = rand::rng().random_range(0.9..1.1);
-    Duration::from_millis((raw as f64 * jitter) as u64)
+    Duration::from_millis((raw as f64 * jitter) as u64).min(Duration::from_secs(60))
 }
 
 /// Identifies a retry path and its associated trace-event layer.

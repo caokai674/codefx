@@ -445,9 +445,14 @@ impl CodexErr {
             | CodexErrorDetails::CyberPolicy { .. }
             | CodexErrorDetails::BioPolicy { .. }
             | CodexErrorDetails::MisalignmentPolicyViolation { .. } => None,
-            CodexErrorDetails::ServerOverloaded | CodexErrorDetails::RetryLimit(_) => {
+            // Capacity errors can be returned without a `Retry-After` header. Treat those
+            // responses as transient and use the same bounded local backoff as other retryable
+            // stream failures. The caller still owns the retry budget.
+            CodexErrorDetails::ServerOverloaded => Some(
                 self.server_retry_delay()
-            }
+                    .unwrap_or_else(|| backoff(retry_count).min(Duration::from_secs(60))),
+            ),
+            CodexErrorDetails::RetryLimit(_) => self.server_retry_delay(),
             CodexErrorDetails::Stream(..)
             | CodexErrorDetails::ContentFilter
             | CodexErrorDetails::RateLimitExceeded(_)

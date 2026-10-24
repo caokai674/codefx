@@ -12,7 +12,9 @@ if ([string]::IsNullOrWhiteSpace($Release)) {
 }
 
 $NonInteractive = $env:CODEX_NON_INTERACTIVE -match "^(?i:1|true|yes)$"
-$DefaultPreferReleasesOpenAICom = $true
+$CodefxGithubRepo = if ([string]::IsNullOrWhiteSpace($env:CODEFX_GITHUB_REPO)) { "caokai674/codefx" } else { $env:CODEFX_GITHUB_REPO }
+$CodefxReplaceOfficial = $env:CODEFX_REPLACE_OFFICIAL -match "^(?i:1|true|yes)$"
+$DefaultPreferReleasesOpenAICom = $false
 $PreferReleasesOpenAICom = if ([string]::IsNullOrWhiteSpace($env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM)) {
     $DefaultPreferReleasesOpenAICom
 } else {
@@ -81,7 +83,7 @@ function Assert-ValidReleaseVersion {
     )
 
     if ($Version -cne "latest" -and $Version -cnotmatch "^[0-9]+\.[0-9]+\.[0-9]+(?:-alpha(?:\.[0-9]+){0,2}|-beta(?:\.[0-9]+)?)?$") {
-        throw "Invalid Codex release version: $Version. Expected latest or x.y.z[-alpha[.N[.M]]|-beta[.N]]."
+        throw "Invalid Codefx release version: $Version. Expected latest or x.y.z[-alpha[.N[.M]]|-beta[.N]]."
     }
 }
 
@@ -172,9 +174,9 @@ function Resolve-ReleaseAssetSelection {
     $checksumFallbackUrl = $null
     if ($ResolvedRelease.Source -eq "ReleasesOpenAICom") {
         $packageUrl = "$ReleasesBaseUri/releases/$version/$packageAsset"
-        $packageFallbackUrl = "https://github.com/openai/codex/releases/download/rust-v$version/$packageAsset"
+        $packageFallbackUrl = "https://github.com/$CodefxGithubRepo/releases/download/rust-v$version/$packageAsset"
         $checksumUrl = "$ReleasesBaseUri/releases/$version/$checksumAsset"
-        $checksumFallbackUrl = "https://github.com/openai/codex/releases/download/rust-v$version/$checksumAsset"
+        $checksumFallbackUrl = "https://github.com/$CodefxGithubRepo/releases/download/rust-v$version/$checksumAsset"
     }
 
     $packageMetadata = Find-ReleaseAssetMetadata -AssetName $packageAsset -ReleaseMetadata $releaseMetadata -Url $packageUrl -FallbackUrl $packageFallbackUrl
@@ -193,11 +195,11 @@ function Resolve-ReleaseAssetSelection {
     $packageFallbackUrl = $null
     if ($ResolvedRelease.Source -eq "ReleasesOpenAICom") {
         $packageUrl = "$ReleasesBaseUri/releases/$version/$packageAsset"
-        $packageFallbackUrl = "https://github.com/openai/codex/releases/download/rust-v$version/$packageAsset"
+        $packageFallbackUrl = "https://github.com/$CodefxGithubRepo/releases/download/rust-v$version/$packageAsset"
     }
     $packageMetadata = Find-ReleaseAssetMetadata -AssetName $packageAsset -ReleaseMetadata $releaseMetadata -Url $packageUrl -FallbackUrl $packageFallbackUrl
     if ($null -eq $packageMetadata) {
-        throw "Could not find Codex package or platform npm release assets for Codex $version."
+        throw "Could not find Codex package or platform npm release assets for Codefx $version."
     }
 
     return [PSCustomObject]@{
@@ -331,7 +333,7 @@ function Resolve-VersionFromReleaseMetadata {
     )
 
     if (-not $ReleaseMetadata.tag_name) {
-        throw "Failed to resolve the latest Codex release version."
+        throw "Failed to resolve the latest Codefx release version."
     }
 
     $resolvedVersion = Normalize-Version -RawVersion $ReleaseMetadata.tag_name
@@ -346,11 +348,11 @@ function Resolve-ReleaseFromGitHub {
 
     if ($NormalizedVersion -eq "latest") {
         $requestedRelease = "latest"
-        $metadataUri = "https://api.github.com/repos/openai/codex/releases/latest"
+        $metadataUri = "https://api.github.com/repos/$CodefxGithubRepo/releases/latest"
     } else {
         $resolvedVersion = $NormalizedVersion
         $requestedRelease = $resolvedVersion
-        $metadataUri = "https://api.github.com/repos/openai/codex/releases/tags/rust-v$resolvedVersion"
+        $metadataUri = "https://api.github.com/repos/$CodefxGithubRepo/releases/tags/rust-v$resolvedVersion"
     }
 
     try {
@@ -907,7 +909,7 @@ function Maybe-HandleConflictingInstall {
     }
     $uninstallCommand = if ($manager -eq "bun") { "bun" } else { "npm" }
 
-    if (Prompt-YesNo "Uninstall the existing $manager-managed Codex now?") {
+    if ($CodefxReplaceOfficial -or (Prompt-YesNo "Uninstall the existing $manager-managed Codex now?")) {
         Write-Step "Running: $uninstallCommand $($uninstallArgs -join ' ')"
         try {
             & $uninstallCommand @uninstallArgs
@@ -994,11 +996,11 @@ $releaseName = "$resolvedVersion-$target"
 $releaseDir = Join-Path $releasesDir $releaseName
 
 if (-not [string]::IsNullOrWhiteSpace($currentVersion) -and $currentVersion -ne $resolvedVersion) {
-    Write-Step "Updating Codex CLI from $currentVersion to $resolvedVersion"
+    Write-Step "Updating Codefx CLI from $currentVersion to $resolvedVersion"
 } elseif (-not [string]::IsNullOrWhiteSpace($currentVersion)) {
-    Write-Step "Updating Codex CLI"
+    Write-Step "Updating Codefx CLI"
 } else {
-    Write-Step "Installing Codex CLI"
+    Write-Step "Installing Codefx CLI"
 }
 Write-Step "Detected platform: $platformLabel"
 Write-Step "Resolved version: $resolvedVersion"
@@ -1084,7 +1086,7 @@ try {
             $checksumPath = Join-Path $tempDir $checksumAsset
             $stagingDir = Join-Path $releasesDir ".staging.$releaseName.$PID"
 
-            Write-Step "Downloading Codex CLI"
+            Write-Step "Downloading Codefx CLI"
             if ($installLayout -eq "Package") {
                 Invoke-WebRequestWithFallback -Metadata $checksumMetadata -OutFile $checksumPath -ExpectedDigest $checksumMetadata.Sha256 -AssetName $checksumAsset -ReleaseVersion $resolvedVersion -RequiredManifestAsset $packageAsset
                 $expectedPackageDigest = Get-PackageArchiveDigest -ManifestPath $checksumPath -AssetName $packageAsset
@@ -1247,7 +1249,7 @@ if ($prioritizeVisibleBin) {
 
 Write-Step "Current PowerShell session: codex"
 Write-Step "Future PowerShell windows: open a new PowerShell window and run: codex"
-Write-Host "Codex CLI $resolvedVersion installed successfully."
+Write-Host "Codefx CLI $resolvedVersion installed successfully."
 
 $codexCommand = Join-Path $visibleBinDir "codex.exe"
 if (Prompt-YesNo "Start Codex now?") {
