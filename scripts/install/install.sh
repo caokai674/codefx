@@ -5,7 +5,9 @@ set -eu
 RELEASE="${CODEX_RELEASE:-latest}"
 NON_INTERACTIVE="${CODEX_NON_INTERACTIVE:-false}"
 DAEMON_ONLY="${CODEX_INSTALL_DAEMON_ONLY:-0}"
-DEFAULT_PREFER_RELEASES_OPENAI_COM="true"
+CODEFX_GITHUB_REPO="${CODEFX_GITHUB_REPO:-caokai674/codefx}"
+CODEFX_REPLACE_OFFICIAL="${CODEFX_REPLACE_OFFICIAL:-0}"
+DEFAULT_PREFER_RELEASES_OPENAI_COM="false"
 PREFER_RELEASES_OPENAI_COM="${CODEX_INSTALLER_USE_RELEASES_OPENAI_COM:-$DEFAULT_PREFER_RELEASES_OPENAI_COM}"
 RELEASES_BASE_URL="https://releases.openai.com/codex"
 RELEASES_CONNECT_TIMEOUT=10
@@ -75,7 +77,7 @@ validate_version() {
   fi
 
   if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-alpha(\.[0-9]+){0,2}|-beta(\.[0-9]+)?)?$'; then
-    echo "Invalid Codex release version: $version. Expected latest or x.y.z[-alpha[.N[.M]]|-beta[.N]]." >&2
+    echo "Invalid Codefx release version: $version. Expected latest or x.y.z[-alpha[.N[.M]]|-beta[.N]]." >&2
     return 1
   fi
 }
@@ -320,7 +322,7 @@ release_url_for_asset() {
   asset="$1"
   resolved_version="$2"
 
-  printf 'https://github.com/openai/codex/releases/download/rust-v%s/%s\n' "$resolved_version" "$asset"
+  printf 'https://github.com/%s/releases/download/rust-v%s/%s\n' "$CODEFX_GITHUB_REPO" "$resolved_version" "$asset"
 }
 
 releases_url_for_asset() {
@@ -333,7 +335,7 @@ releases_url_for_asset() {
 release_metadata_url() {
   resolved_version="$1"
 
-  printf 'https://api.github.com/repos/openai/codex/releases/tags/rust-v%s\n' "$resolved_version"
+  printf 'https://api.github.com/repos/%s/releases/tags/rust-v%s\n' "$CODEFX_GITHUB_REPO" "$resolved_version"
 }
 
 parse_downloaded_release_metadata() {
@@ -352,7 +354,7 @@ resolve_metadata_version() {
     *) metadata_version="" ;;
   esac
   if [ -z "$metadata_version" ]; then
-    echo "Failed to resolve the latest Codex release version." >&2
+    echo "Failed to resolve the latest Codefx release version." >&2
     return 1
   fi
   validate_version "$metadata_version"
@@ -362,7 +364,7 @@ resolve_release_from_github() {
   normalized_version="$1"
   if [ "$normalized_version" = "latest" ]; then
     requested_release="latest"
-    metadata_url="https://api.github.com/repos/openai/codex/releases/latest"
+    metadata_url="https://api.github.com/repos/$CODEFX_GITHUB_REPO/releases/latest"
   else
     resolved_version="$normalized_version"
     requested_release="$resolved_version"
@@ -1086,7 +1088,11 @@ handle_conflicting_install() {
       ;;
   esac
 
-  if prompt_yes_no "Uninstall the existing $conflict_manager-managed Codex now?"; then
+  replace_official=false
+  case "$CODEFX_REPLACE_OFFICIAL" in
+    1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss]) replace_official=true ;;
+  esac
+  if $replace_official || prompt_yes_no "Uninstall the existing $conflict_manager-managed Codex now?"; then
     step "Running: $uninstall_cmd"
     if ! sh -c "$uninstall_cmd"; then
       warn "Failed to uninstall the existing $conflict_manager-managed Codex. Continuing with the standalone install."
@@ -1294,11 +1300,11 @@ release_dir="$RELEASES_DIR/$release_name"
 current_version="$(current_installed_version)"
 
 if [ -n "$current_version" ] && [ "$current_version" != "$resolved_version" ]; then
-  step "Updating Codex CLI from $current_version to $resolved_version"
+  step "Updating Codefx CLI from $current_version to $resolved_version"
 elif [ -n "$current_version" ]; then
-  step "Updating Codex CLI"
+  step "Updating Codefx CLI"
 else
-  step "Installing Codex CLI"
+  step "Installing Codefx CLI"
 fi
 step "Detected platform: $platform_label"
 step "Resolved version: $resolved_version"
@@ -1389,7 +1395,7 @@ if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"
   archive_path="$tmp_dir/$asset"
   checksum_path="$tmp_dir/$checksum_asset"
 
-  step "Downloading Codex CLI"
+  step "Downloading Codefx CLI"
   if [ "$install_layout" = "package" ]; then
     checksum_digest="$(release_asset_digest "$checksum_asset")"
     download_file_with_fallback "$checksum_url" "$checksum_fallback_url" "$checksum_path" "$checksum_digest" "$checksum_asset" "$asset"
@@ -1455,7 +1461,7 @@ update_visible_command "$release_dir"
 add_to_path
 verify_visible_command
 if ! prune_standalone_releases; then
-  warn "Could not safely inspect old Codex releases; skipped remaining cleanup."
+  warn "Could not safely inspect old Codefx releases; skipped remaining cleanup."
 fi
 release_install_lock
 handle_conflicting_install
@@ -1476,5 +1482,5 @@ case "$path_action" in
     ;;
 esac
 
-printf 'Codex CLI %s installed successfully.\n' "$resolved_version"
+printf 'Codefx CLI %s installed successfully.\n' "$resolved_version"
 maybe_launch_codex_now

@@ -66,8 +66,11 @@ pub fn read_managed_residency_requirement() -> Option<ResidencyRequirement> {
 }
 
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
-const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
-const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
+// Capacity errors are transient and may be emitted without a Retry-After header. Keep a large
+// default budget so a short server-side capacity incident does not abort an otherwise valid turn.
+// Explicit provider settings still take precedence and remain capped by MAX_* below.
+const DEFAULT_STREAM_MAX_RETRIES: u64 = 100;
+const DEFAULT_REQUEST_MAX_RETRIES: u64 = 100;
 const DEFAULT_AWS_CREDENTIAL_EXPORT_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_AWS_AUTH_REFRESH_TIMEOUT_MS: u64 = 300_000;
 pub const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS: u64 = 15_000;
