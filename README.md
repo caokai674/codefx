@@ -11,57 +11,11 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ## Quickstart
 
-### Installing and running Codefx
+### Installation temporarily paused
 
-Run the following on Mac or Linux to install Codex CLI:
+**Do not run the one-command replacement installers yet.** Release 0.164.0 currently has no binary assets. The previous wrapper could remove an official installation before attempting a download. Both replacement entry points are disabled while download verification and replacement tests are completed.
 
-```shell
-curl -fsSL https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.sh | sh
-```
-
-Run the following on Windows to install Codefx:
-
-```shell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.ps1 | iex"
-```
-
-The installer replaces an existing official npm, Bun, pnpm, Vite+, Homebrew, or standalone installation and keeps the `codex` command name.
-
-```shell
-curl -fsSL https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.sh | sh
-```
-
-```powershell
-$env:CODEFX_REPLACE_OFFICIAL='1'; irm https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.ps1 | iex
-```
-
-Codefx can also be installed over an existing npm installation with the same replacement script:
-
-```shell
-curl -fsSL https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.sh | sh
-```
-
-```shell
-# Homebrew installations are removed automatically by the replacement script.
-```
-
-Then simply run `codex` to get started.
-
-<details>
-<summary>You can also go to the <a href="https://github.com/caokai674/codefx/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
-
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
-
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
-
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
-
-</details>
+Keep your existing Codex installation. Installation will be documented again after platform packages and checksums are published and verified in the [Codefx Release](https://github.com/hitmux/codefx/releases/tag/rust-v0.164.0).
 
 ### Using Codex with your ChatGPT plan
 
