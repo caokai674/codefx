@@ -30,6 +30,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $created = $false
 $taskName = 'CodefxCI-' + $user
 $registered = $false
+$batchGranted = $false
+$sid = $null
 $result = 1
 try {
     $accountResult = & net.exe user $user $password /add /expires:never 2>&1
@@ -69,6 +71,9 @@ exit $result
     [IO.File]::WriteAllText((Join-Path $root 'launch.ps1'), $launcher, $utf8)
     # Limit access to this test account and the runner administrator/SYSTEM.
     $sid = (New-Object Security.Principal.NTAccount($env:COMPUTERNAME, $user)).Translate([Security.Principal.SecurityIdentifier]).Value
+    Add-Type -Path (Join-Path $PSScriptRoot 'codefx-ci-account.cs')
+    $batchGranted = [CodefxCiAccountV1]::EnsureBatchLogon($user, $env:COMPUTERNAME, $password, $sid)
+    Write-Host 'Verified batch logon for the disposable CI account.'
     $runnerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     # Set file and directory ACLs explicitly: inherited directory-only flags on
     # protected files can otherwise leave a readable root with unreadable files.
@@ -142,6 +147,7 @@ exit $result
                 Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
             }
         }
+        if ($batchGranted) { try { [CodefxCiAccountV1]::RevokeBatchLogon($sid) } catch { Write-Warning $_ } }
         $null = & net.exe user $user /delete 2>&1
     }
     $secret = Join-Path $root 'environment.json'
