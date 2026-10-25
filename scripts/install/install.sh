@@ -1419,7 +1419,7 @@ cf_check_ancestor() {
       return 1
     fi
     if awk -v p="$cf_ancestor" '$1 == p { found=1 } END { exit !found }' "$tmp_dir/active-codex"; then
-      echo 'Run this installer from an external terminal: its ancestor is Codex.' >&2
+      echo 'Codex is running in the installer ancestor chain. Run this installer from an external terminal.' >&2
       return 1
     fi
     cf_parent=$(awk -v p="$cf_ancestor" '$1 == p { print $2; exit }' "$tmp_dir/processes")
