@@ -21,6 +21,78 @@ MISMATCH_VERSION = "0.145.0"
 
 
 class InstallShTest(unittest.TestCase):
+    def test_replacement_failure_preserves_existing_command(self) -> None:
+        for failure in ("metadata", "missing_assets", "missing_download", "checksum", "archive", "version", "identity"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                old, log = create_official_install(root)
+                archive, checksum, metadata = create_package_release(
+                    root, binary_version=MISMATCH_VERSION if failure == "version" else VERSION,
+                    target="x86_64-unknown-linux-musl",
+                )
+                options = dict(metadata_json=metadata, archive_path=archive, checksum_path=checksum)
+                if failure == "metadata":
+                    options["metadata_failure"] = True
+                elif failure == "missing_assets":
+                    options["metadata_json"] = json.dumps({"tag_name": f"rust-v{VERSION}", "assets": []})
+                elif failure == "missing_download":
+                    options["archive_path"] = None
+                elif failure == "checksum":
+                    archive.write_bytes(b"corrupt download")
+                elif failure == "archive":
+                    archive.write_bytes(b"correctly hashed but invalid tar")
+                    options["metadata_json"] = refresh_release_digests(archive, checksum, metadata)
+                elif failure == "identity":
+                    # A correctly hashed official binary with the same version must fail.
+                    binary = root / "package/bin/codex"
+                    binary.write_text(f"#!/bin/sh\nprintf 'codex-cli {VERSION}\\n'\n")
+                    repack_release(root, archive)
+                    options["metadata_json"] = refresh_release_digests(archive, checksum, metadata)
+                before = old.read_bytes()
+                result, _ = run_installer_in(root, VERSION, replacement_wrapper=True, **options)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(old.read_bytes(), before)
+                self.assertFalse(log.exists(), "Package managers ran before a verified replacement")
+                self.assertIn("codex-cli", subprocess.check_output([str(old), "--version"], text=True))
+
+    def test_replacement_uninstalls_only_after_new_command_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            old, log = create_official_install(root)
+            archive, checksum, metadata = create_package_release(root, target="x86_64-unknown-linux-musl")
+            result, requests = run_installer_in(
+                root, VERSION, replacement_wrapper=True, metadata_json=metadata,
+                archive_path=archive, checksum_path=checksum,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(old.exists())
+            self.assertEqual(log.read_text(), f"npm verified codefx {VERSION}\n")
+            visible = root / "install-bin/codex"
+            self.assertEqual(subprocess.check_output([str(visible), "--version"], text=True).strip(), f"codefx {VERSION}")
+            self.assertFalse(list(root.glob("codefx-install.*")))
+            self.assertEqual(len(requests), 4)
+
+    def test_same_version_standalone_survives_invalid_staged_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            target = "x86_64-unknown-linux-musl"
+            release = root / f"codex-home/packages/standalone/releases/{VERSION}-{target}"
+            (release / "bin").mkdir(parents=True)
+            old = release / "bin/codex"
+            write_executable(old, f"#!/bin/sh\nprintf 'codex-cli {VERSION}\\n'\n")
+            current = release.parent.parent / "current"
+            current.symlink_to(release)
+            visible = root / "install-bin/codex"
+            visible.parent.mkdir()
+            visible.symlink_to(current / "bin/codex")
+            archive, checksum, metadata = create_package_release(root, binary_version=MISMATCH_VERSION, target=target)
+            before = old.read_bytes()
+            result, _ = run_installer_in(root, VERSION, replacement_wrapper=True, metadata_json=metadata, archive_path=archive, checksum_path=checksum)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(old.read_bytes(), before)
+            self.assertEqual(current.resolve(), release)
+            self.assertIn("codex-cli", subprocess.check_output([str(visible), "--version"], text=True))
+
     def test_metadata_fetch_failure_is_not_reported_as_missing_assets(self) -> None:
         result, requests = run_installer(VERSION, metadata_failure=True)
 
@@ -28,7 +100,7 @@ class InstallShTest(unittest.TestCase):
         self.assertEqual(
             requests,
             [
-                "https://api.github.com/repos/openai/codex/releases/tags/"
+                "https://api.github.com/repos/hitmux/codefx/releases/tags/"
                 f"rust-v{VERSION}"
             ],
         )
@@ -45,9 +117,9 @@ class InstallShTest(unittest.TestCase):
         self.assertEqual(
             requests,
             [
-                "https://api.github.com/repos/openai/codex/releases/tags/"
+                "https://api.github.com/repos/hitmux/codefx/releases/tags/"
                 f"rust-v{VERSION}",
-                "https://github.com/openai/codex/releases/download/"
+                "https://github.com/hitmux/codefx/releases/download/"
                 f"rust-v{VERSION}/codex-package_SHA256SUMS",
             ],
         )
@@ -61,9 +133,9 @@ class InstallShTest(unittest.TestCase):
         self.assertEqual(
             requests,
             [
-                "https://api.github.com/repos/openai/codex/releases/tags/"
+                "https://api.github.com/repos/hitmux/codefx/releases/tags/"
                 f"rust-v{version}",
-                "https://github.com/openai/codex/releases/download/"
+                "https://github.com/hitmux/codefx/releases/download/"
                 f"rust-v{version}/codex-package_SHA256SUMS",
             ],
         )
@@ -76,8 +148,8 @@ class InstallShTest(unittest.TestCase):
         self.assertEqual(
             requests,
             [
-                "https://api.github.com/repos/openai/codex/releases/latest",
-                "https://github.com/openai/codex/releases/download/"
+                "https://api.github.com/repos/hitmux/codefx/releases/latest",
+                "https://github.com/hitmux/codefx/releases/download/"
                 f"rust-v{VERSION}/codex-package_SHA256SUMS",
             ],
         )
@@ -92,8 +164,8 @@ class InstallShTest(unittest.TestCase):
         self.assertEqual(
             requests,
             [
-                "https://api.github.com/repos/openai/codex/releases/latest",
-                "https://github.com/openai/codex/releases/download/"
+                "https://api.github.com/repos/hitmux/codefx/releases/latest",
+                "https://github.com/hitmux/codefx/releases/download/"
                 f"rust-v{VERSION}/codex-package_SHA256SUMS",
             ],
         )
@@ -135,7 +207,7 @@ class InstallShTest(unittest.TestCase):
             )
             self.assertTrue(os.access(host_path, os.X_OK))
 
-    def test_releases_latest_installs_verified_package_by_default(self) -> None:
+    def test_default_installs_verified_codefx_package_from_github(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             archive_path, checksum_path, metadata_json = create_package_release(root)
@@ -154,9 +226,9 @@ class InstallShTest(unittest.TestCase):
             self.assertEqual(
                 requests,
                 [
-                    "https://releases.openai.com/codex/channels/latest",
-                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
-                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
+                    "https://api.github.com/repos/hitmux/codefx/releases/latest",
+                    f"https://github.com/hitmux/codefx/releases/download/rust-v{VERSION}/codex-package_SHA256SUMS",
+                    f"https://github.com/hitmux/codefx/releases/download/rust-v{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
                 ],
             )
 
@@ -223,7 +295,7 @@ class InstallShTest(unittest.TestCase):
             contents = binary.read_text()
             binary.write_text(
                 '#!/bin/sh\n[ "$1" = "--version" ] || exit 2\n'
-                f"echo codex-cli {VERSION}\n"
+                f"echo codefx {VERSION}\n"
             )
             incompatible, _ = run_installer_in(
                 root,
@@ -616,7 +688,7 @@ class InstallShTest(unittest.TestCase):
                         archive_path=archive_path,
                         checksum_path=checksum_path,
                         force_macos=True,
-                        use_mirror=None,
+                        use_mirror=True,
                     )
 
                     self.assertEqual(result.returncode, 0, result.stderr)
@@ -624,10 +696,10 @@ class InstallShTest(unittest.TestCase):
                         requests,
                         [
                             "https://releases.openai.com/codex/channels/latest",
-                            "https://api.github.com/repos/openai/codex/releases/latest",
-                            "https://github.com/openai/codex/releases/download/"
+                            "https://api.github.com/repos/hitmux/codefx/releases/latest",
+                            "https://github.com/hitmux/codefx/releases/download/"
                             f"rust-v{VERSION}/codex-package_SHA256SUMS",
-                            "https://github.com/openai/codex/releases/download/"
+                            "https://github.com/hitmux/codefx/releases/download/"
                             f"rust-v{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
                         ],
                     )
@@ -650,7 +722,7 @@ class InstallShTest(unittest.TestCase):
                 archive_path=archive_path,
                 checksum_path=checksum_path,
                 force_macos=True,
-                use_mirror=None,
+                use_mirror=True,
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -658,11 +730,11 @@ class InstallShTest(unittest.TestCase):
                 requests,
                 [
                     f"https://releases.openai.com/codex/releases/{VERSION}/release.json",
-                    "https://api.github.com/repos/openai/codex/releases/tags/"
+                    "https://api.github.com/repos/hitmux/codefx/releases/tags/"
                     f"rust-v{VERSION}",
-                    "https://github.com/openai/codex/releases/download/"
+                    "https://github.com/hitmux/codefx/releases/download/"
                     f"rust-v{VERSION}/codex-package_SHA256SUMS",
-                    "https://github.com/openai/codex/releases/download/"
+                    "https://github.com/hitmux/codefx/releases/download/"
                     f"rust-v{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
                 ],
             )
@@ -680,7 +752,7 @@ class InstallShTest(unittest.TestCase):
                 archive_path=archive_path,
                 checksum_path=checksum_path,
                 force_macos=True,
-                use_mirror=None,
+                use_mirror=True,
                 releases_mode="asset_fallback",
             )
 
@@ -690,10 +762,10 @@ class InstallShTest(unittest.TestCase):
                 [
                     "https://releases.openai.com/codex/channels/latest",
                     f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
-                    "https://github.com/openai/codex/releases/download/"
+                    "https://github.com/hitmux/codefx/releases/download/"
                     f"rust-v{VERSION}/codex-package_SHA256SUMS",
                     f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
-                    "https://github.com/openai/codex/releases/download/"
+                    "https://github.com/hitmux/codefx/releases/download/"
                     f"rust-v{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
                 ],
             )
@@ -711,7 +783,7 @@ class InstallShTest(unittest.TestCase):
                 archive_path=archive_path,
                 checksum_path=checksum_path,
                 force_macos=True,
-                use_mirror=None,
+                use_mirror=True,
                 releases_mode="corrupt_assets",
             )
 
@@ -721,10 +793,10 @@ class InstallShTest(unittest.TestCase):
                 [
                     "https://releases.openai.com/codex/channels/latest",
                     f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
-                    "https://github.com/openai/codex/releases/download/"
+                    "https://github.com/hitmux/codefx/releases/download/"
                     f"rust-v{VERSION}/codex-package_SHA256SUMS",
                     f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
-                    "https://github.com/openai/codex/releases/download/"
+                    "https://github.com/hitmux/codefx/releases/download/"
                     f"rust-v{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
                 ],
             )
@@ -748,7 +820,7 @@ class InstallShTest(unittest.TestCase):
                 archive_path=archive_path,
                 checksum_path=checksum_path,
                 force_macos=True,
-                use_mirror=None,
+                use_mirror=True,
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -757,9 +829,9 @@ class InstallShTest(unittest.TestCase):
                 [
                     "https://releases.openai.com/codex/channels/latest",
                     f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
-                    "https://github.com/openai/codex/releases/download/"
+                    "https://github.com/hitmux/codefx/releases/download/"
                     f"rust-v{VERSION}/codex-package_SHA256SUMS",
-                    "https://api.github.com/repos/openai/codex/releases/tags/"
+                    "https://api.github.com/repos/hitmux/codefx/releases/tags/"
                     f"rust-v{VERSION}",
                     f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
                 ],
@@ -792,7 +864,7 @@ class InstallShTest(unittest.TestCase):
                 checksum_path=checksum_path,
                 releases_checksum_path=mirror_checksum_path,
                 force_macos=True,
-                use_mirror=None,
+                use_mirror=True,
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -801,9 +873,9 @@ class InstallShTest(unittest.TestCase):
                 [
                     "https://releases.openai.com/codex/channels/latest",
                     f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
-                    "https://github.com/openai/codex/releases/download/"
+                    "https://github.com/hitmux/codefx/releases/download/"
                     f"rust-v{VERSION}/codex-package_SHA256SUMS",
-                    "https://api.github.com/repos/openai/codex/releases/tags/"
+                    "https://api.github.com/repos/hitmux/codefx/releases/tags/"
                     f"rust-v{VERSION}",
                     f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
                 ],
@@ -822,7 +894,7 @@ class InstallShTest(unittest.TestCase):
                 archive_path=archive_path,
                 checksum_path=checksum_path,
                 force_macos=True,
-                use_mirror=None,
+                use_mirror=True,
                 releases_mode="corrupt_checksum_and_github",
             )
 
@@ -832,9 +904,9 @@ class InstallShTest(unittest.TestCase):
                 [
                     "https://releases.openai.com/codex/channels/latest",
                     f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
-                    "https://github.com/openai/codex/releases/download/"
+                    "https://github.com/hitmux/codefx/releases/download/"
                     f"rust-v{VERSION}/codex-package_SHA256SUMS",
-                    "https://api.github.com/repos/openai/codex/releases/tags/"
+                    "https://api.github.com/repos/hitmux/codefx/releases/tags/"
                     f"rust-v{VERSION}",
                 ],
             )
@@ -868,7 +940,7 @@ class InstallShTest(unittest.TestCase):
                 ],
             )
             self.assertIn(
-                f"did not report expected version {MISMATCH_VERSION}",
+                "Staged Codefx package failed executable or version validation",
                 result.stderr,
             )
             self.assertNotIn("installed successfully", result.stdout)
@@ -893,9 +965,9 @@ class InstallShTest(unittest.TestCase):
                 first_requests,
                 [
                     f"https://releases.openai.com/codex/releases/{VERSION}/release.json",
-                    "https://api.github.com/repos/openai/codex/releases/tags/"
+                    "https://api.github.com/repos/hitmux/codefx/releases/tags/"
                     f"rust-v{VERSION}",
-                    "https://github.com/openai/codex/releases/download/"
+                    "https://github.com/hitmux/codefx/releases/download/"
                     f"rust-v{VERSION}/codex-npm-darwin-arm64-{VERSION}.tgz",
                 ],
             )
@@ -915,7 +987,7 @@ class InstallShTest(unittest.TestCase):
                 second_requests,
                 [
                     f"https://releases.openai.com/codex/releases/{VERSION}/release.json",
-                    "https://api.github.com/repos/openai/codex/releases/tags/"
+                    "https://api.github.com/repos/hitmux/codefx/releases/tags/"
                     f"rust-v{VERSION}",
                 ],
             )
@@ -958,6 +1030,7 @@ def run_installer_in(
     fail_ps: bool = False,
     daemon_only: bool = False,
     manual_update: bool = False,
+    replacement_wrapper: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     bin_dir = root / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -982,6 +1055,9 @@ def run_installer_in(
             printf '%s\n' "$url" >>"$CODEX_TEST_REQUEST_LOG"
 
             case "$url" in
+              https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install.sh)
+                cp "$CODEFX_TEST_BASE_INSTALLER" "$output"
+                ;;
               https://api.github.com/*)
                 if [ "$CODEX_TEST_METADATA_FAILURE" = "1" ]; then
                   echo "curl: (22) The requested URL returned error: 403" >&2
@@ -1024,7 +1100,7 @@ def run_installer_in(
                   exit 22
                 fi
                 ;;
-              https://github.com/openai/codex/releases/download/*/codex-package_SHA256SUMS)
+              https://github.com/hitmux/codefx/releases/download/*/codex-package_SHA256SUMS)
                 if [ "$CODEX_TEST_RELEASES_MODE" = "corrupt_checksum_and_github" ]; then
                   printf '<html>proxy error</html>\n' >"$output"
                   exit 0
@@ -1035,14 +1111,14 @@ def run_installer_in(
                   exit 22
                 fi
                 ;;
-              https://github.com/openai/codex/releases/download/*/codex-package-*.tar.gz)
+              https://github.com/hitmux/codefx/releases/download/*/codex-package-*.tar.gz)
                 if [ -n "$CODEX_TEST_ARCHIVE_PATH" ]; then
                   cp "$CODEX_TEST_ARCHIVE_PATH" "$output"
                 else
                   exit 22
                 fi
                 ;;
-              https://github.com/openai/codex/releases/download/*/codex-npm-*.tgz)
+              https://github.com/hitmux/codefx/releases/download/*/codex-npm-*.tgz)
                 if [ -n "$CODEX_TEST_LEGACY_ARCHIVE_PATH" ]; then
                   cp "$CODEX_TEST_LEGACY_ARCHIVE_PATH" "$output"
                 else
@@ -1088,6 +1164,9 @@ def run_installer_in(
     env = os.environ.copy()
     env.update(
         {
+            "TMPDIR": str(root),
+            "CODEFX_TEST_BASE_INSTALLER": str(INSTALL_SCRIPT),
+            "CODEFX_GITHUB_REPO": "hitmux/codefx",
             "CODEX_HOME": str(root / "codex-home"),
             "CODEX_INSTALL_DIR": str(root / "install-bin"),
             "CODEX_NON_INTERACTIVE": "1",
@@ -1134,7 +1213,7 @@ def run_installer_in(
             "TRUE" if use_mirror else "false"
         )
     result = subprocess.run(
-        ["/bin/sh", str(INSTALL_SCRIPT)],
+        ["/bin/sh", str(INSTALL_SCRIPT.with_name("install-codefx.sh") if replacement_wrapper else INSTALL_SCRIPT)],
         capture_output=True,
         check=False,
         env=env,
@@ -1148,10 +1227,48 @@ def run_installer_in(
     return result, requests
 
 
+def create_official_install(root: Path) -> tuple[Path, Path]:
+    bin_dir = root / "bin"
+    bin_dir.mkdir()
+    old = bin_dir / "codex"
+    write_executable(old, f"#!/bin/sh\n# #!/usr/bin/env node\nprintf 'codex-cli {VERSION}\\n'\n")
+    log = root / "uninstall.log"
+    write_executable(bin_dir / "npm", f"""#!/bin/sh
+set -eu
+actual="$("$CODEX_INSTALL_DIR/codex" --version)"
+[ "$actual" = 'codefx {VERSION}' ]
+printf 'npm verified %s\\n' "$actual" >>'{log}'
+rm -f '{old}'
+""")
+    for manager in ("bun", "pnpm", "vp"):
+        write_executable(bin_dir / manager, f"#!/bin/sh\necho unexpected-{manager} >>'{log}'\nexit 1\n")
+    return old, log
+
+
+def repack_release(root: Path, archive_path: Path) -> None:
+    with tarfile.open(archive_path, "w:gz") as archive:
+        for path in (root / "package").iterdir():
+            archive.add(path, arcname=path.name)
+
+
+def refresh_release_digests(archive: Path, checksum: Path, metadata: str) -> str:
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    checksum.write_text(f"{digest}  {archive.name}\n")
+    data = json.loads(metadata)
+    for asset in data["assets"]:
+        path = archive if asset["name"] == archive.name else checksum
+        asset["digest"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    return json.dumps(data)
+
+
 def process_start_time() -> str:
-    details = subprocess.check_output(
-        ["ps", "-p", str(os.getpid()), "-o", "stat=", "-o", "lstart="], text=True
-    ).strip()
+    try:
+        details = subprocess.check_output(
+            ["ps", "-p", str(os.getpid()), "-o", "stat=", "-o", "lstart="],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+    except subprocess.CalledProcessError as exc:
+        raise unittest.SkipTest("ps cannot inspect this runtime's process namespace") from exc
     return details.split(maxsplit=1)[1]
 
 
@@ -1173,7 +1290,7 @@ def create_package_release(
     )
     write_executable(
         package_dir / "bin" / "codex",
-        f"#!/bin/sh\nprintf 'codex-cli {binary_version}\\n'\n",
+        f"#!/bin/sh\nprintf 'codefx {binary_version}\\n'\n",
     )
     write_executable(
         package_dir / "bin" / "codex-code-mode-host",
@@ -1217,7 +1334,7 @@ def create_legacy_release(root: Path) -> tuple[Path, str]:
     (vendor_dir / "path").mkdir()
     write_executable(
         vendor_dir / "codex" / "codex",
-        f"#!/bin/sh\nprintf 'codex-cli {VERSION}\\n'\n",
+        f"#!/bin/sh\nprintf 'codefx {VERSION}\\n'\n",
     )
     write_executable(vendor_dir / "path" / "rg", "#!/bin/sh\nexit 0\n")
 

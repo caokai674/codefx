@@ -12,7 +12,7 @@ if ([string]::IsNullOrWhiteSpace($Release)) {
 }
 
 $NonInteractive = $env:CODEX_NON_INTERACTIVE -match "^(?i:1|true|yes)$"
-$CodefxGithubRepo = if ([string]::IsNullOrWhiteSpace($env:CODEFX_GITHUB_REPO)) { "caokai674/codefx" } else { $env:CODEFX_GITHUB_REPO }
+$CodefxGithubRepo = if ([string]::IsNullOrWhiteSpace($env:CODEFX_GITHUB_REPO)) { "hitmux/codefx" } else { $env:CODEFX_GITHUB_REPO }
 $CodefxReplaceOfficial = $env:CODEFX_REPLACE_OFFICIAL -match "^(?i:1|true|yes)$"
 $DefaultPreferReleasesOpenAICom = $false
 $PreferReleasesOpenAICom = if ([string]::IsNullOrWhiteSpace($env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM)) {
@@ -431,7 +431,7 @@ function Get-VersionFromBinary {
         return $null
     }
 
-    if ($versionOutput -match '([0-9][0-9A-Za-z.+-]*)$') {
+    if ($LASTEXITCODE -eq 0 -and $versionOutput -match '^codefx ([0-9][0-9A-Za-z.+-]*)$') {
         return $matches[1]
     }
 
@@ -1102,6 +1102,7 @@ try {
             New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
             if ($installLayout -eq "Package") {
                 tar -xzf $archivePath -C $stagingDir
+                if ($LASTEXITCODE -ne 0) { throw "Codefx package extraction failed." }
                 if (-not (Test-PackageContentsAreComplete -PackageDir $stagingDir)) {
                     throw "Downloaded Codex package archive did not contain the expected package layout."
                 }
@@ -1109,6 +1110,7 @@ try {
                 $extractDir = Join-Path $tempDir "extract"
                 New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
                 tar -xzf $archivePath -C $extractDir
+                if ($LASTEXITCODE -ne 0) { throw "Codefx npm package extraction failed." }
 
                 $vendorRoot = Join-Path $extractDir "package/vendor/$target"
                 $resourcesDir = Join-Path $stagingDir "codex-resources"
@@ -1129,10 +1131,26 @@ try {
                 }
             }
 
-            if (Test-Path -LiteralPath $releaseDir) {
-                Remove-Item -LiteralPath $releaseDir -Recurse -Force
+            $stagedCodex = if ($installLayout -eq "Package") {
+                Join-Path $stagingDir "bin\codex.exe"
+            } else {
+                Join-Path $stagingDir "codex.exe"
             }
-            Move-Item -LiteralPath $stagingDir -Destination $releaseDir
+            if ((Get-VersionFromBinary -CodexPath $stagedCodex) -cne $resolvedVersion) {
+                throw "Staged Codefx package failed executable or version validation; existing installation preserved."
+            }
+            if (Test-Path -LiteralPath $releaseDir) {
+                $backupRelease = Join-Path $releasesDir ".backup.$releaseName.$PID"
+                Move-Item -LiteralPath $releaseDir -Destination $backupRelease
+                try {
+                    Move-Item -LiteralPath $stagingDir -Destination $releaseDir
+                } catch {
+                    Move-Item -LiteralPath $backupRelease -Destination $releaseDir
+                    throw
+                }
+            } else {
+                Move-Item -LiteralPath $stagingDir -Destination $releaseDir
+            }
         }
 
         if (-not (Test-ReleaseIsComplete -ReleaseDir $releaseDir -ExpectedVersion $resolvedVersion -ExpectedTarget $target -Layout $installLayout)) {

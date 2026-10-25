@@ -5,7 +5,7 @@ set -eu
 RELEASE="${CODEX_RELEASE:-latest}"
 NON_INTERACTIVE="${CODEX_NON_INTERACTIVE:-false}"
 DAEMON_ONLY="${CODEX_INSTALL_DAEMON_ONLY:-0}"
-CODEFX_GITHUB_REPO="${CODEFX_GITHUB_REPO:-caokai674/codefx}"
+CODEFX_GITHUB_REPO="${CODEFX_GITHUB_REPO:-hitmux/codefx}"
 CODEFX_REPLACE_OFFICIAL="${CODEFX_REPLACE_OFFICIAL:-0}"
 DEFAULT_PREFER_RELEASES_OPENAI_COM="false"
 PREFER_RELEASES_OPENAI_COM="${CODEX_INSTALLER_USE_RELEASES_OPENAI_COM:-$DEFAULT_PREFER_RELEASES_OPENAI_COM}"
@@ -939,7 +939,8 @@ version_from_binary() {
     return 1
   fi
 
-  "$codex_path" --version 2>/dev/null | sed -n 's/.* \([0-9][0-9A-Za-z.+-]*\)$/\1/p' | head -n 1
+  version_output="$("$codex_path" --version 2>/dev/null)" || return 1
+  printf '%s\n' "$version_output" | sed -n 's/^codefx \([0-9][0-9A-Za-z.+-]*\)$/\1/p' | head -n 1
 }
 
 current_installed_version() {
@@ -1120,10 +1121,21 @@ install_package_release() {
   fi
   ln -sf "bin/codex" "$stage_release/codex"
 
-  if [ -e "$release_dir" ] || [ -L "$release_dir" ]; then
-    rm -rf "$release_dir"
+  if ! release_contents_are_complete "$stage_release" "$resolved_version" "$vendor_target" "$install_layout"; then
+    echo "Staged Codefx package failed executable or version validation; existing installation preserved." >&2
+    return 1
   fi
-  mv "$stage_release" "$release_dir"
+  if [ -e "$release_dir" ] || [ -L "$release_dir" ]; then
+    # Keep the previous bytes until the new directory has been committed.
+    backup_release="$RELEASES_DIR/.backup.$(basename "$release_dir").$$"
+    mv "$release_dir" "$backup_release"
+    if ! mv "$stage_release" "$release_dir"; then
+      mv "$backup_release" "$release_dir"
+      return 1
+    fi
+  else
+    mv "$stage_release" "$release_dir"
+  fi
 }
 
 install_legacy_platform_npm_release() {
@@ -1147,10 +1159,21 @@ install_legacy_platform_npm_release() {
     chmod 0755 "$stage_release/codex-resources/bwrap"
   fi
 
-  if [ -e "$release_dir" ] || [ -L "$release_dir" ]; then
-    rm -rf "$release_dir"
+  if ! release_contents_are_complete "$stage_release" "$resolved_version" "$vendor_target" "$install_layout"; then
+    echo "Staged Codefx package failed executable or version validation; existing installation preserved." >&2
+    return 1
   fi
-  mv "$stage_release" "$release_dir"
+  if [ -e "$release_dir" ] || [ -L "$release_dir" ]; then
+    # Keep the previous bytes until the new directory has been committed.
+    backup_release="$RELEASES_DIR/.backup.$(basename "$release_dir").$$"
+    mv "$release_dir" "$backup_release"
+    if ! mv "$stage_release" "$release_dir"; then
+      mv "$backup_release" "$release_dir"
+      return 1
+    fi
+  else
+    mv "$stage_release" "$release_dir"
+  fi
 }
 
 release_dir_is_complete() {
@@ -1162,6 +1185,15 @@ release_dir_is_complete() {
   [ -d "$release_dir" ] &&
     [ "$(basename "$release_dir")" = "$expected_version-$expected_target" ] ||
     return 1
+
+  release_contents_are_complete "$release_dir" "$expected_version" "$expected_target" "$layout"
+}
+
+release_contents_are_complete() (
+  release_dir="$1"
+  expected_version="$2"
+  expected_target="$3"
+  layout="$4"
 
   case "$layout" in
     package)
@@ -1190,7 +1222,7 @@ release_dir_is_complete() {
 
   installed_version="$(version_from_binary "$release_dir/bin/codex" || version_from_binary "$release_dir/codex" || true)"
   [ "$installed_version" = "$expected_version" ]
-}
+)
 
 update_current_link() {
   release_dir="$1"

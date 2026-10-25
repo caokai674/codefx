@@ -1,0 +1,129 @@
+name: Codefx Linux release recovery
+
+# Keep publication manual while installation remains paused.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing Codefx release tag
+        type: string
+        required: true
+        default: rust-v0.164.0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codefx-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'hitmux/codefx'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      TARGET: x86_64-unknown-linux-musl
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      AWS_LC_SYS_NO_JITTER_ENTROPY: '1'
+      CODEX_REPO_ROOT: ${{ github.workspace }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Test safe replacement flow
+        run: |
+          sh -n scripts/install/install.sh scripts/install/install-codefx.sh
+          python3 -m unittest discover -s scripts/install -p test_install_sh.py -v
+      - name: Validate requested release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Check source version and record provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' codex-rs/Cargo.toml | head -1)"
+          [[ "$RELEASE_TAG" == "rust-v$version" ]]
+          mkdir -p dist
+          printf 'repository=%s\ntag=%s\ncommit=%s\ntarget=%s\n' \
+            "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$(git rev-parse HEAD)" "$TARGET" > dist/codefx-linux-build.txt
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+      - name: Install verified musl dependencies
+        run: bash .github/scripts/install-musl-build-tools.sh
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-musl
+      - name: Build sandbox and Codefx binaries
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target "$TARGET" --bin bwrap
+          strip --strip-debug --strip-unneeded "target/$TARGET/release/bwrap"
+          export CODEX_BWRAP_SHA256="$(sha256sum "target/$TARGET/release/bwrap" | cut -d ' ' -f 1)"
+          export STABLE_GIT_COMMIT="$(git rev-parse HEAD)"
+          cargo build --locked --release --target "$TARGET" --bin codex --bin codex-code-mode-host
+          [[ "$("target/$TARGET/release/codex" --version)" == "codefx ${RELEASE_TAG#rust-v}" ]]
+      - name: Package and verify executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/build-codex-package-archive.sh \
+            --target "$TARGET" --bundle primary \
+            --entrypoint-dir "$PWD/codex-rs/target/$TARGET/release" \
+            --archive-dir "$PWD/dist"
+          cd dist
+          sha256sum codex-package-*.tar.gz > codex-package_SHA256SUMS
+          sha256sum -c codex-package_SHA256SUMS
+          mkdir smoke
+          tar -xzf "codex-package-$TARGET.tar.gz" -C smoke
+          [[ "$(smoke/bin/codex --version)" == "codefx ${RELEASE_TAG#rust-v}" ]]
+          test -x smoke/bin/codex-code-mode-host
+          test -x smoke/codex-path/rg
+          test -x smoke/codex-resources/bwrap
+          rm -rf smoke
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verified-codefx-linux
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: verified-codefx-linux
+          path: dist
+      - name: Publish verified Linux assets to the paused release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c codex-package_SHA256SUMS
+          gh release upload "$RELEASE_TAG" codex-package-*.tar.gz codex-package_SHA256SUMS codefx-linux-build.txt --repo "$GITHUB_REPOSITORY"
+          # Preserve the pre-release flag and installation pause notice.
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets
