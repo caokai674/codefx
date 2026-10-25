@@ -76,3 +76,8 @@ jobs:
             cat "$target.sha256" >> codex-package_SHA256SUMS
           done
           gh release upload "$RELEASE_TAG" codex-package_SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+  smoke:
+    needs: manifest
+    uses: ./.github/workflows/codefx-native-smoke.yml
+    with:
+      tag: ${{ inputs.tag }}

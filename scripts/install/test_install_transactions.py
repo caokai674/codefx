@@ -83,6 +83,8 @@ class Transactions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve(); package = self.package(root)
             old, visible, current = self.old_install(root); before = old.read_bytes()
+            history = current.parent / 'selection-history'
+            history.write_text(old.parent.parent.name + '\nprevious-release\nstale identity\n')
             (root / 'home').mkdir(); profile = root / 'home/.profile'; profile.write_text('# preserve profile\n')
             # A real failed filesystem operation after release validation and commit.
             (root / 'bin').mkdir()
@@ -97,6 +99,7 @@ exec /bin/ln "$@"
             self.assertEqual(current.resolve(), old.parent.parent)
             self.assertEqual(visible.resolve(), old)
             self.assertFalse((current.parent / '.transaction').exists())
+            self.assertEqual(int(history.read_text().splitlines()[2].split()[1]), os.lstat(current).st_ino)
 
     def test_recovery_of_interrupted_selection_precedes_next_install(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -110,6 +113,32 @@ exec /bin/ln "$@"
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('Recovering an interrupted', result.stderr)
             self.assertEqual(subprocess.check_output([str(visible), '--version'], text=True).strip(), f'codefx {VERSION}')
+
+    def test_committed_receipt_recovery_keeps_the_verified_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve(); package = self.package(root)
+            self.old_install(root)
+            first = self.run_install(root, package)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            standalone = root / 'codex-home/packages/standalone'
+            receipt = next(standalone.glob('.rollback.*'))
+            self.assertTrue((receipt / 'committed').exists())
+            receipt.rename(standalone / '.transaction')
+            (root / 'requests.log').unlink()
+            second = self.run_install(root, package)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertIn('committed installation', second.stdout)
+            self.assertNotIn('Downloading Codefx CLI', second.stdout)
+            self.assertEqual(len((root / 'requests.log').read_text().splitlines()), 1)
+
+    def test_lifecycle_subprocess_does_not_inherit_the_installer_lock(self):
+        prefix = INSTALL_SCRIPT.read_text().split('parse_args "$@"')[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / 'check.sh'
+            script.write_text('if ( : >&9 ) 2>/dev/null; then exit 44; fi\nexit 0\n')
+            code = prefix + f'\nexec 9>{shlex.quote(tmp + "/lock")}\ncf_run /bin/sh {shlex.quote(str(script))}\n'
+            result = subprocess.run(['/bin/sh'], input=code, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_process_inspection_failure_is_fail_closed(self):
         # Invoke the real helper with a failing OS process provider.

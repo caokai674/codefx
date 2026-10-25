@@ -1273,13 +1273,13 @@ cf_guarded() {
 
 cf_run() (
   # Portable bounded execution; no dependency on GNU timeout on macOS.
-  "$@" & cf_child=$!
+  "$@" 9>&- & cf_child=$!
   ( trap '[ -z "${cf_sleep:-}" ] || kill "$cf_sleep" 2>/dev/null; exit 0' TERM INT
     sleep "$CF_TIMEOUT" & cf_sleep=$!
     wait "$cf_sleep"; kill -TERM "$cf_child" 2>/dev/null || exit 0
     sleep 3 & cf_sleep=$!; wait "$cf_sleep"
     kill -KILL "$cf_child" 2>/dev/null || true
-  ) & cf_watch=$!
+  ) 9>&- >/dev/null 2>&1 & cf_watch=$!
   cf_result=0
   wait "$cf_child" || cf_result=$?
   kill "$cf_watch" 2>/dev/null || true
@@ -1464,6 +1464,19 @@ cf_snapshot() (
   printf '%s\n' "$cf_path" > "$cf_tx/$cf_key.path"
 )
 
+cf_rebind_history() (
+  cf_root=$1; cf_current=$2
+  cf_history="$cf_root/selection-history"
+  [ -f "$cf_history" ] && [ -L "$cf_current" ] || return 0
+  cf_selected=$(cd -P "$cf_current" 2>/dev/null && pwd) || return 0
+  cf_first=$(sed -n '1p' "$cf_history")
+  [ "$cf_first" = "${cf_selected##*/}" ] || return 0
+  cf_previous=$(sed -n '2p' "$cf_history")
+  cf_identity=$(LC_ALL=C stat -c '%d %i %.9Z' "$cf_current" 2>/dev/null || LC_ALL=C stat -f '%d %i %Fc' "$cf_current") || return 0
+  printf '%s\n%s\n%s\n' "$cf_first" "$cf_previous" "$cf_identity" > "$cf_history.tmp.$$"
+  mv -f "$cf_history.tmp.$$" "$cf_history"
+)
+
 cf_restore() (
   cf_failed=0
   if [ -f "$cf_tx/migration-attempted" ] && [ -x "$BIN_PATH" ]; then
@@ -1492,6 +1505,10 @@ cf_restore() (
       cp -p "$cf_key.file" "$cf_path" || cf_failed=1
     fi
   done
+  cf_rebind_history "$STANDALONE_ROOT" "$CURRENT_LINK" || warn 'Could not refresh restored selection history; pruning will skip it.'
+  if [ -f "$cf_tx/daemon-current.path" ]; then
+    cf_rebind_history "$CODEX_HOME_DIR/packages/app-server-daemon" "$CODEX_HOME_DIR/packages/app-server-daemon/current" || warn 'Could not refresh daemon selection history; pruning will skip it.'
+  fi
   if [ -f "$cf_tx/restart-cli" ]; then
     cf_restart=$(cat "$cf_tx/restart-cli")
     cf_run "$cf_restart" app-server daemon start > "$cf_tx/daemon-restore" 2>&1 || {
@@ -1534,12 +1551,18 @@ cf_validate_archive() (
   }
 )
 
+cf_retire_transaction() {
+  mv "$cf_tx" "$STANDALONE_ROOT/.rollback.$(date +%s).$$.$(basename "$tmp_dir")"
+  cf_tx=""
+}
+
 cf_finish() {
   if [ -n "$cf_tx" ] && [ -d "$cf_tx" ]; then
-    # Keep the previous entrypoints and profile available for manual recovery.
-    rm -f "$cf_tx/migration-attempted" "$cf_tx/restart-cli"
-    mv "$cf_tx" "$STANDALONE_ROOT/.rollback.$(date +%s).$$"
-    cf_tx=""
+    # The commit marker distinguishes a completed cutover from an interruption
+    # while moving the recovery receipt. Keep runtime evidence in the receipt.
+    : > "$cf_tx/committed"
+    cf_committed=1
+    cf_retire_transaction
   fi
   cf_committed=1
 }
@@ -1647,7 +1670,9 @@ cleanup() {
   trap - EXIT INT TERM
   if [ "$cf_committed" = 0 ] && [ -n "$cf_tx" ] && [ -d "$cf_tx" ]; then
     warn 'Restoring the previous installation after an incomplete transaction.'
-    if cf_restore; then rm -rf "$cf_tx"; else
+    if [ -f "$cf_tx/committed" ]; then
+      cf_retire_transaction || warn "Committed installation receipt retained at $cf_tx"
+    elif cf_restore; then rm -rf "$cf_tx"; else
       warn "Rollback needs attention; recovery files retained at $cf_tx"
       cf_exit=1
     fi
@@ -1666,9 +1691,14 @@ trap 'exit 143' TERM
 acquire_install_lock
 if [ -d "$STANDALONE_ROOT/.transaction" ]; then
   cf_tx="$STANDALONE_ROOT/.transaction"
-  warn 'Recovering an interrupted installation before proceeding.'
-  cf_restore || exit 1
-  rm -rf "$cf_tx"; cf_tx=""
+  if [ -f "$cf_tx/committed" ]; then
+    step 'Finishing the recovery receipt of a committed installation.'
+    cf_retire_transaction
+  else
+    warn 'Recovering an interrupted installation before proceeding.'
+    cf_restore || exit 1
+    rm -rf "$cf_tx"; cf_tx=""
+  fi
 fi
 if [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" = "1" ] &&
   { [ -e "$STANDALONE_ROOT/current" ] || [ -L "$STANDALONE_ROOT/current" ]; }; then
@@ -1767,7 +1797,7 @@ if [ "$DAEMON_ONLY" = "1" ] && [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" != "1" ];
   if [ "$install_layout" = "package" ]; then
     installed_codex="$release_dir/bin/codex"
   fi
-  if ! "$installed_codex" app-server daemon pid-update-loop --check-package-ownership >/dev/null 2>&1; then
+  if ! cf_run "$installed_codex" app-server daemon pid-update-loop --check-package-ownership >/dev/null 2>&1; then
     echo "The production release does not support daemon-owned packages; the current selection was left unchanged." >&2
     exit 1
   fi

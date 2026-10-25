@@ -330,13 +330,12 @@ function Invoke-WithInstallLock {
     try {
         & $Script
         if ($script:Cf.Prepared) {
-            $script:Cf.RestartCli = $null
-            $script:Cf.MigrationAttempted = $false
-            Save-CodefxJournal
-            Move-Item -LiteralPath $script:Cf.Root -Destination (Join-Path $standaloneRoot ('.rollback.' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + '.' + $PID))
+            $script:Cf.Committed = $true
+            try { Save-CodefxJournal } catch { $script:Cf.Committed = $false; throw }
+            Complete-CodefxReceipt
         }
     } catch {
-        if ($script:Cf.Prepared) {
+        if ($script:Cf.Prepared -and -not $script:Cf.Committed) {
             Write-WarningStep 'Restoring the previous installation after an incomplete transaction.'
             try { Undo-CodefxTransaction; Remove-Item -LiteralPath $script:Cf.Root -Recurse -Force }
             catch { Write-WarningStep "Rollback needs attention; recovery files retained at $($script:Cf.Root): $_" }
@@ -1015,6 +1014,11 @@ function Get-CodefxProcesses {
     }
 }
 
+function Complete-CodefxReceipt {
+    $receipt = '.rollback.' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + '.' + [guid]::NewGuid().ToString('N')
+    Move-Item -LiteralPath $script:Cf.Root -Destination (Join-Path $standaloneRoot $receipt)
+}
+
 function Save-CodefxJournal {
     $journal = Join-Path $script:Cf.Root 'journal.json'
     $script:Cf | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath "$journal.tmp" -Encoding UTF8
@@ -1110,6 +1114,22 @@ function Start-CodefxTransaction {
     }
 }
 
+function Repair-CodefxRestoredHistory {
+    param([string]$Root, [string]$Current)
+    $history = Join-Path $Root 'selection-history'
+    if (-not (Test-Path -LiteralPath $history) -or -not (Test-IsJunction $Current)) { return }
+    try {
+        Add-JunctionSupportType
+        $lines = @(Get-Content -LiteralPath $history)
+        if ($lines.Count -ne 3) { return }
+        $selected = [CodexInstaller.JunctionV3]::ResolveDirectory($Current)
+        if ($lines[0] -cne (Split-Path -Leaf $selected)) { return }
+        $identity = [CodexInstaller.JunctionV3]::SelectionIdentity($Current)
+        [IO.File]::WriteAllText("$history.tmp.$PID", "$($lines[0])`n$($lines[1])`n$identity`n")
+        Move-Item -LiteralPath "$history.tmp.$PID" -Destination $history -Force
+    } catch { Write-WarningStep 'Could not refresh restored selection history; pruning will skip it.' }
+}
+
 function Undo-CodefxTransaction {
     if ($script:Cf.MigrationAttempted) {
         $newCli = Join-Path $visibleBinDir 'codex.exe'
@@ -1138,6 +1158,10 @@ function Undo-CodefxTransaction {
         if ($null -ne $item) { [IO.Directory]::Delete($visibleBinDir) }
         Move-Item -LiteralPath $script:Cf.VisibleBackup -Destination $visibleBinDir
     }
+    Repair-CodefxRestoredHistory $standaloneRoot $currentDir
+    if (@($script:Cf.Paths | Where-Object { $_.Path -eq (Join-Path $codexHome 'packages\app-server-daemon\current') }).Count -gt 0) {
+        Repair-CodefxRestoredHistory (Join-Path $codexHome 'packages\app-server-daemon') (Join-Path $codexHome 'packages\app-server-daemon\current')
+    }
     [Environment]::SetEnvironmentVariable('Path', $script:Cf.UserPath, 'User')
     $env:Path = $script:Cf.ProcessPath
     if ($script:Cf.RestartCli) { $null = Invoke-CodefxBounded $script:Cf.RestartCli @('app-server','daemon','start') }
@@ -1162,34 +1186,40 @@ function Update-CodefxDaemon {
 
 function Invoke-CodefxArchiveTool {
     param([string]$Archive, [ValidateSet('list','types','extract')][string]$Mode, [string]$Destination)
-    # Some Windows tar builds use an ANSI argv. Stream the archive through stdin
-    # and set the Unicode working directory through CreateProcessW instead.
+    # Windows tar builds can use ANSI argv, and Windows PowerShell's redirected
+    # stdin writer can emit an encoding preamble. Use ASCII relative filenames
+    # and pass the Unicode working directory through CreateProcessW.
     $systemTar = Join-Path $env:SystemRoot 'System32\tar.exe'
     if (-not [Environment]::Is64BitProcess) { $systemTar = Join-Path $env:SystemRoot 'Sysnative\tar.exe' }
     if (-not (Test-Path -LiteralPath $systemTar)) {
         $available = Get-Command tar.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
         $systemTar = $available.Source
     }
+    $working = Split-Path -Parent $Archive
+    $name = Split-Path -Leaf $Archive
+    $privateInput = $null
+    if ($Mode -eq 'extract') {
+        $working = $Destination
+        $name = '.codefx-input-' + [guid]::NewGuid().ToString('N') + '.tar.gz'
+        $privateInput = Join-Path $working $name
+        Copy-Item -LiteralPath $Archive -Destination $privateInput
+    }
+    if ($name -notmatch '^[A-Za-z0-9_.-]+$') { throw 'Archive input filename must use ASCII letters, numbers, dot, dash or underscore.' }
     $start = New-Object Diagnostics.ProcessStartInfo
     $start.FileName = $systemTar
-    $start.Arguments = switch ($Mode) { 'list' { '-tzf -' }; 'types' { '-tvzf -' }; 'extract' { '-xzf -' } }
-    if ($Mode -eq 'extract') { $start.WorkingDirectory = $Destination }
+    $operation = switch ($Mode) { 'list' { '-tzf' }; 'types' { '-tvzf' }; 'extract' { '-xzf' } }
+    $start.Arguments = "$operation $name"
+    $start.WorkingDirectory = $working
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
-    $start.RedirectStandardInput = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     $proc = New-Object Diagnostics.Process
     $proc.StartInfo = $start
-    $source = $null
     try {
         if (-not $proc.Start()) { throw 'Cannot start the archive reader.' }
         $stdout = $proc.StandardOutput.ReadToEndAsync()
         $stderr = $proc.StandardError.ReadToEndAsync()
-        $source = [IO.File]::OpenRead($Archive)
-        $copy = $source.CopyToAsync($proc.StandardInput.BaseStream)
-        if (-not $copy.Wait(300000)) { throw 'Archive input timed out.' }
-        $proc.StandardInput.Close()
         if (-not $proc.WaitForExit(300000)) { throw 'Archive processing timed out.' }
         $output = $stdout.GetAwaiter().GetResult()
         $errorText = $stderr.GetAwaiter().GetResult()
@@ -1199,8 +1229,8 @@ function Invoke-CodefxArchiveTool {
         try { if (-not $proc.HasExited) { $proc.Kill() } } catch {}
         throw
     } finally {
-        if ($null -ne $source) { $source.Dispose() }
         $proc.Dispose()
+        if ($null -ne $privateInput) { Remove-Item -LiteralPath $privateInput -Force -ErrorAction SilentlyContinue }
     }
 }
 
@@ -1293,7 +1323,7 @@ $installLayout = $assetSelection.InstallLayout
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-install-" + [System.Guid]::NewGuid().ToString("N"))
 $guardRejected = $false
 $script:Cf = @{
-    Root = (Join-Path $standaloneRoot '.transaction'); Prepared = $false; Paths = @();
+    Root = (Join-Path $standaloneRoot '.transaction'); Prepared = $false; Committed = $false; Paths = @();
     ReleaseBackup = $null; ReleasePath = $releaseDir; VisibleBackup = $null; RestartCli = $null; MigrationAttempted = $false
     UserPath = [Environment]::GetEnvironmentVariable('Path', 'User'); ProcessPath = $env:Path
 }
@@ -1307,6 +1337,23 @@ if ($DryRun) {
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 try {
     Invoke-WithInstallLock -LockPath $lockPath -Script {
+        if (Test-Path -LiteralPath $script:Cf.Root) {
+            $saved = Get-Content -LiteralPath (Join-Path $script:Cf.Root 'journal.json') -Raw | ConvertFrom-Json
+            $fresh = $script:Cf
+            $recovered = @{}
+            foreach ($key in $fresh.Keys) { $recovered[$key] = $fresh[$key] }
+            foreach ($property in $saved.PSObject.Properties) { $recovered[$property.Name] = $property.Value }
+            $script:Cf = $recovered
+            if ($script:Cf.Committed) {
+                Write-Step 'Finishing the recovery receipt of a committed installation.'
+                Complete-CodefxReceipt
+            } else {
+                Write-WarningStep 'Recovering an interrupted installation.'
+                Undo-CodefxTransaction
+                Remove-Item -LiteralPath $script:Cf.Root -Recurse -Force
+            }
+            $script:Cf = $fresh
+        }
         $updaterRecord = Join-Path $codexHome "app-server-daemon\app-server-updater.pid"
         if ($daemonOnly) { $updaterRecord = Join-Path $codexHome "app-server-daemon\daemon-updater.pid" }
         $oldUpdaterParent = $false
@@ -1360,15 +1407,6 @@ try {
                 $script:guardRejected = $true
                 return
             }
-        }
-        if (Test-Path -LiteralPath $script:Cf.Root) {
-            $saved = Get-Content -LiteralPath (Join-Path $script:Cf.Root 'journal.json') -Raw | ConvertFrom-Json
-            $fresh = $script:Cf
-            $script:Cf = $saved
-            Write-WarningStep 'Recovering an interrupted installation.'
-            Undo-CodefxTransaction
-            Remove-Item -LiteralPath $script:Cf.Root -Recurse -Force
-            $script:Cf = $fresh
         }
         Remove-StaleInstallArtifacts -ReleasesDir $releasesDir
 

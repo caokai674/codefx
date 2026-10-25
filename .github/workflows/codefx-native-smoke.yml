@@ -1,0 +1,73 @@
+name: Codefx native installation smoke
+on:
+  workflow_dispatch:
+    inputs:
+      tag: {type: string, required: true, default: rust-v0.164.0}
+  workflow_call:
+    inputs:
+      tag: {type: string, required: true}
+permissions:
+  contents: read
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - {os: ubuntu-24.04, target: x86_64-unknown-linux-musl}
+          - {os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl}
+          - {os: macos-15, target: aarch64-apple-darwin}
+          - {os: macos-15-intel, target: x86_64-apple-darwin}
+          - {os: windows-2025, target: x86_64-pc-windows-msvc}
+          - {os: windows-11-arm, target: aarch64-pc-windows-msvc}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      EXPECTED_TARGET: ${{ matrix.target }}
+      CODEFX_GITHUB_REPO: hitmux/codefx
+      CODEX_NON_INTERACTIVE: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with: {persist-credentials: false}
+      - name: Install published package through the public bootstrap
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version="${RELEASE_TAG#rust-v}"
+          export HOME="$RUNNER_TEMP/codefx smoke home"
+          export CODEX_HOME="$HOME/.codex"
+          export CODEX_INSTALL_DIR="$HOME/visible bin"
+          mkdir -p "$HOME"
+          sh scripts/install/install-codefx.sh --release "$version"
+          [[ "$("$CODEX_INSTALL_DIR/codex" --version)" == "codefx $version" ]]
+          grep -Fq "$EXPECTED_TARGET" "$CODEX_HOME/packages/standalone/current/codex-package.json"
+          "$CODEX_INSTALL_DIR/codex" app-server daemon update --help | grep -Fq -- '--from-cli'
+          "$CODEX_HOME/packages/standalone/current/codex-path/rg" --version
+          sh scripts/install/install.sh --release "$version"
+          [[ "$("$CODEX_INSTALL_DIR/codex" --version)" == "codefx $version" ]]
+          test ! -d "$CODEX_HOME/packages/standalone/.transaction"
+      - name: Install published package through the Windows bootstrap
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -notmatch '^rust-v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid release tag.' }
+          $version = $env:RELEASE_TAG.Substring(6)
+          $env:CODEX_HOME = Join-Path $env:RUNNER_TEMP ('codefx smoke ' + [char]0x6d4b + '\home')
+          $env:CODEX_INSTALL_DIR = Join-Path $env:RUNNER_TEMP ('codefx smoke ' + [char]0x6d4b + '\visible bin')
+          ./scripts/install/install-codefx.ps1 -Release $version
+          $actual = & (Join-Path $env:CODEX_INSTALL_DIR 'codex.exe') --version
+          if ($LASTEXITCODE -ne 0 -or $actual -cne "codefx $version") { throw 'Published command failed.' }
+          $current = Join-Path $env:CODEX_HOME 'packages\standalone\current'
+          $metadata = Get-Content -LiteralPath (Join-Path $current 'codex-package.json') -Raw | ConvertFrom-Json
+          if ($metadata.target -cne $env:EXPECTED_TARGET) { throw 'Architecture mismatch.' }
+          $help = & (Join-Path $env:CODEX_INSTALL_DIR 'codex.exe') app-server daemon update --help
+          if ($LASTEXITCODE -ne 0 -or ($help -join "`n") -notmatch '--from-cli') { throw 'Daemon migration API missing.' }
+          & (Join-Path $current 'codex-path\rg.exe') --version
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled rg failed.' }
+          ./scripts/install/install.ps1 -Release $version
+          if (Test-Path -LiteralPath (Join-Path $env:CODEX_HOME 'packages\standalone\.transaction')) { throw 'Unfinished installation transaction.' }
