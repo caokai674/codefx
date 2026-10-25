@@ -5,6 +5,7 @@ on:
       tag: {type: string, required: true}
       target: {type: string, required: true}
       runner: {type: string, required: true}
+      reuse_only: {type: boolean, required: false, default: false}
 permissions:
   contents: read
 jobs:
@@ -17,6 +18,7 @@ jobs:
     env:
       TARGET: ${{ inputs.target }}
       RELEASE_TAG: ${{ inputs.tag }}
+      REUSE_ONLY: ${{ inputs.reuse_only }}
       CARGO_BUILD_JOBS: '2'
       CARGO_PROFILE_RELEASE_DEBUG: '0'
       CARGO_PROFILE_RELEASE_LTO: 'false'
@@ -65,6 +67,7 @@ jobs:
             done
             echo 'reuse=true' >> "$GITHUB_OUTPUT"
           else
+            if [[ "$REUSE_ONLY" == true ]]; then echo "Verified published package is required: $asset" >&2; exit 1; fi
             echo 'reuse=false' >> "$GITHUB_OUTPUT"
           fi
       - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8

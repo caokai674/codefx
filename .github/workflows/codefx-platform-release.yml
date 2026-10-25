@@ -6,6 +6,10 @@ on:
         type: string
         required: true
         default: rust-v0.164.0
+      reuse_only:
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -53,6 +57,7 @@ jobs:
       tag: ${{ inputs.tag }}
       target: ${{ matrix.target }}
       runner: ${{ matrix.runner }}
+      reuse_only: ${{ inputs.reuse_only }}
   manifest:
     needs: platforms
     runs-on: ubuntu-24.04
