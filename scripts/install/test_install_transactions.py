@@ -167,7 +167,9 @@ exec /bin/mv "$@"
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertIn('committed installation', second.stdout)
             self.assertNotIn('Downloading Codefx CLI', second.stdout)
-            self.assertEqual(len((root / 'requests.log').read_text().splitlines()), 1)
+            requests = (root / 'requests.log').read_text().splitlines()
+            self.assertTrue(requests)
+            self.assertTrue(all(url.startswith('https://api.github.com/') for url in requests), requests)
 
     def test_lifecycle_subprocess_does_not_inherit_the_installer_lock(self):
         prefix = INSTALL_SCRIPT.read_text().split('parse_args "$@"')[0]

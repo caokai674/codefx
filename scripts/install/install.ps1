@@ -1104,7 +1104,57 @@ function Test-CodefxDaemonInstalled {
     return $false
 }
 
+function Test-CodefxDetachedLaunch {
+    param([string]$Executable)
+    if (-not ('CodexInstaller.LaunchProbeV1' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace CodexInstaller {
+  public static class LaunchProbeV1 {
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    struct StartupInfo {
+      public int cb;
+      public string reserved, desktop, title;
+      public int x,y,width,height,xchars,ychars,fill,flags;
+      public short show, reservedSize;
+      public IntPtr reservedBytes,input,output,error;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct ProcessInfo { public IntPtr process, thread; public uint pid, tid; }
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern bool CreateProcessW(string application, StringBuilder command, IntPtr processSecurity,
+      IntPtr threadSecurity, bool inheritHandles, uint flags, IntPtr environment, string directory,
+      ref StartupInfo startup, out ProcessInfo process);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool TerminateProcess(IntPtr process, uint code);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr handle);
+    public static void Check(string executable) {
+      var startup = new StartupInfo(); startup.cb = Marshal.SizeOf(typeof(StartupInfo));
+      ProcessInfo process;
+      // The probe never runs user code: create suspended, then terminate and reap.
+      if (!CreateProcessW(executable, new StringBuilder("\""+executable+"\" --version"),
+          IntPtr.Zero,IntPtr.Zero,false,0x01000000|0x00000004|0x00000008,IntPtr.Zero,null,ref startup,out process))
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "This terminal cannot launch the independent Windows daemon. Use a normal external terminal before migrating.");
+      try {
+        if (!TerminateProcess(process.process,0)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (WaitForSingleObject(process.process,5000)!=0) throw new Exception("Suspended daemon launch probe did not terminate.");
+      } finally { CloseHandle(process.thread); CloseHandle(process.process); }
+    }
+  }
+}
+'@
+    }
+    [CodexInstaller.LaunchProbeV1]::Check($Executable)
+}
+
 function Assert-CodefxDaemonContext {
+    param([string]$Executable)
     if ((Test-CodefxGuardedUpdate) -or $KeepDaemon -or -not (Test-CodefxDaemonInstalled)) { return }
     # The daemon rejects an elevated launcher. Check before stopping the old
     # runtime, because it must remain possible to restart it during rollback.
@@ -1112,11 +1162,13 @@ function Assert-CodefxDaemonContext {
     if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         throw 'Migrate the Windows daemon from a non-elevated terminal so it can restart safely. The original installation is retained.'
     }
+    Test-CodefxDetachedLaunch $Executable
 }
 
 function Start-CodefxTransaction {
+    param([string]$Executable)
     if ($script:Cf.Prepared) { return }
-    Assert-CodefxDaemonContext
+    Assert-CodefxDaemonContext $Executable
     $active = @()
     if (-not (Test-CodefxGuardedUpdate)) {
         $active = @(Get-CodefxProcesses)
@@ -1563,7 +1615,7 @@ try {
             if ((Get-VersionFromBinary -CodexPath $stagedCodex) -cne $resolvedVersion) {
                 throw "Staged Codefx package failed executable or version validation; existing installation preserved."
             }
-            Start-CodefxTransaction
+            Start-CodefxTransaction -Executable $stagedCodex
             if (Test-Path -LiteralPath $releaseDir) {
                 $backupRelease = Join-Path $releasesDir ".backup.$releaseName.$PID"
                 $script:Cf.ReleaseBackup = $backupRelease
@@ -1584,7 +1636,8 @@ try {
             throw "Installed Codex command did not report expected version $resolvedVersion."
         }
 
-        Start-CodefxTransaction
+        $selectedExecutable = Join-Path $releaseDir $(if ($installLayout -eq 'Package') { 'bin\codex.exe' } else { 'codex.exe' })
+        Start-CodefxTransaction -Executable $selectedExecutable
         New-Item -ItemType Directory -Force -Path $standaloneRoot | Out-Null
         if ($deferSelection -and (Get-Item -LiteralPath (Join-Path $standaloneRoot "current") -Force -ErrorAction SilentlyContinue)) {
             throw "A dedicated daemon is already selected; retry the update."

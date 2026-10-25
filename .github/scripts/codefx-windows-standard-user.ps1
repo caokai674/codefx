@@ -28,7 +28,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     return
 }
 $created = $false
-$child = $null
+$taskName = 'CodefxCI-' + $user
+$registered = $false
 $result = 1
 try {
     $accountResult = & net.exe user $user $password /add /expires:never 2>&1
@@ -58,10 +59,11 @@ try {
     $env:CODEFX_TEST_ROOT = $Root
     $env:CODEX_NON_INTERACTIVE = '1'
     Set-Location (Join-Path $Root 'source')
-    & (Join-Path $Root "source\$ScriptName")
+    & (Join-Path $Root "source\$ScriptName") *> (Join-Path $Root 'stdout.log')
     if ($LASTEXITCODE -ne 0) { throw "CI script exited $LASTEXITCODE" }
     $result = 0
-} catch { Write-Error -ErrorAction Continue ($_ | Out-String) }
+} catch { ($_ | Out-String) | Set-Content -LiteralPath (Join-Path $Root 'stderr.log') -Encoding UTF8 }
+finally { [IO.File]::WriteAllText((Join-Path $Root 'exitcode.txt'), [string]$result) }
 exit $result
 '@
     [IO.File]::WriteAllText((Join-Path $root 'launch.ps1'), $launcher, $utf8)
@@ -84,16 +86,28 @@ exit $result
     }
     Write-Host ("Isolated launcher ACL: " + (Get-Acl -LiteralPath (Join-Path $root 'launch.ps1')).Sddl)
     $executable = (Get-Command ($Engine + '.exe') -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
-    $credential = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$user", (ConvertTo-SecureString $password -AsPlainText -Force))
     $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $root 'launch.ps1') + '" "' + $root + '" "' + $scriptName + '"'
-    $child = Start-Process -FilePath $executable -ArgumentList $arguments -Credential $credential -LoadUserProfile -WorkingDirectory $root -PassThru -RedirectStandardOutput (Join-Path $root 'stdout.log') -RedirectStandardError (Join-Path $root 'stderr.log')
-    if (-not $child.WaitForExit(600000)) { throw 'Non-administrator Windows checks timed out.' }
-    $child.Refresh()
-    $result = $child.ExitCode
+    # Task Scheduler creates the test process independently of the Actions
+    # runner's job, while retaining a normal user token and default protections.
+    $action = New-ScheduledTaskAction -Execute $executable -Argument $arguments -WorkingDirectory $root
+    $trigger = New-ScheduledTaskTrigger -Once -At ([DateTime]::Now.AddHours(1))
+    $null = Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -User "$env:COMPUTERNAME\$user" -Password $password -RunLevel Limited -Force
+    $registered = $true
+    Start-ScheduledTask -TaskName $taskName
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $completion = Join-Path $root 'exitcode.txt'
+    while (-not (Test-Path -LiteralPath $completion)) {
+        if ($watch.Elapsed.TotalSeconds -ge 600) { throw 'Non-administrator Windows checks timed out.' }
+        if ($watch.Elapsed.TotalSeconds -gt 15 -and (Get-ScheduledTask -TaskName $taskName).State -eq 'Ready') {
+            throw ("Scheduled CI check exited without a completion record: " + (Get-ScheduledTaskInfo -TaskName $taskName).LastTaskResult)
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    $result = [int][IO.File]::ReadAllText($completion)
 } finally {
-    if ($null -ne $child) {
-        if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit() }
-        $child.Dispose()
+    if ($registered) {
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
     }
     foreach ($file in @('stdout.log','stderr.log')) {
         $log = Join-Path $root $file
