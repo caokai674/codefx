@@ -44,6 +44,8 @@ conflict_path=""
 lock_kind=""
 tmp_dir=""
 CF_STOP_RUNNING="${CODEFX_STOP_RUNNING:-0}"
+CF_DEFER_UNTIL_IDLE=0
+CF_IDLE_WAIT_TIMEOUT="${CODEFX_IDLE_WAIT_TIMEOUT:-900}"
 CF_DRY_RUN=0
 CF_LOCK_TIMEOUT="${CODEFX_LOCK_TIMEOUT:-120}"
 CF_DAEMON_POLICY="${CODEFX_DAEMON_POLICY:-auto}"
@@ -94,6 +96,7 @@ parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --stop-running) CF_STOP_RUNNING=1 ;;
+      --defer-until-idle) CF_DEFER_UNTIL_IDLE=1 ;;
       --dry-run) CF_DRY_RUN=1 ;;
       --keep-daemon) CF_DAEMON_POLICY=keep ;;
       --release)
@@ -106,13 +109,15 @@ parse_args() {
         ;;
       --help | -h)
         cat <<EOF
-Usage: install.sh [--release VERSION] [--dry-run] [--stop-running] [--keep-daemon]
+Usage: install.sh [--release VERSION] [--dry-run] [--stop-running] [--defer-until-idle] [--keep-daemon]
 
-Default: keep package-manager registrations; refuse active Codex sessions.
---stop-running  Request normal exit (SIGTERM); never force-kill sessions.
---keep-daemon   Leave the independent daemon package and runtime unchanged.
---dry-run       Resolve assets and list commands without changing the installation.
+Default: preserve package-manager installs; ask before stopping running Codex sessions.
+--stop-running       Request normal exit (SIGTERM); never force-kill sessions.
+--defer-until-idle   Wait for running sessions to exit naturally (default 900s).
+--keep-daemon        Leave the independent daemon package and runtime unchanged.
+--dry-run            Resolve assets and list commands without changing the installation.
 CODEFX_PROCESS_TIMEOUT bounds process operations (1..300 seconds, default 30).
+CODEFX_IDLE_WAIT_TIMEOUT bounds idle waiting (1..3600 seconds, default 900).
 
 Environment:
   CODEX_RELEASE          Version to install; overridden by --release.
@@ -1320,7 +1325,9 @@ cf_resolve_path() (
 )
 
 cf_inventory() (
-  printf '==> Existing codex commands (all PATH entries):\n'
+  printf '==> Existing codex commands (deduplicated PATH entries):\n'
+  cf_seen='
+'
   cf_rest="$PATH:"
   while [ -n "$cf_rest" ]; do
     cf_part=${cf_rest%%:*}; cf_rest=${cf_rest#*:}
@@ -1332,8 +1339,18 @@ cf_inventory() (
       case "$cf_link" in /*) cf_resolved=$cf_link ;; *) cf_resolved="$(dirname "$cf_resolved")/$cf_link" ;; esac
       cf_i=$((cf_i+1))
     done
+    # Resolve physical directory aliases such as /bin -> /usr/bin and dot segments.
+    cf_canonical=$(cd -P "$(dirname "$cf_resolved")" 2>/dev/null &&
+      printf '%s/%s\n' "$(pwd -P)" "$(basename "$cf_resolved")") || cf_canonical="$cf_resolved"
+    case "$cf_seen" in
+      *"
+$cf_canonical
+"*) continue ;;
+    esac
+    cf_seen="$cf_seen$cf_canonical
+"
     cf_kind=native
-    case "$cf_resolved" in
+    case "$cf_canonical" in
       *pnpm*|*\.pnpm/*) cf_kind=pnpm ;;
       *\.bun/*) cf_kind=bun ;;
       *\.vite-plus/*|*\.vp/*) cf_kind=vp ;;
@@ -1390,6 +1407,84 @@ cf_processes() (
   }' "$tmp_dir/processes"
 )
 
+# Check every parent PID in the complete process snapshot, not only Codex entries.
+# This protects an installer launched via a shell or task runner inside Codex.
+cf_check_ancestor() {
+  cf_ancestor=$$
+  cf_walked=0
+  while [ "$cf_ancestor" -gt 1 ]; do
+    cf_walked=$((cf_walked + 1))
+    if [ "$cf_walked" -gt 128 ]; then
+      echo 'Cannot safely inspect process ancestry; use an external terminal.' >&2
+      return 1
+    fi
+    if awk -v p="$cf_ancestor" '$1 == p { found=1 } END { exit !found }' "$tmp_dir/active-codex"; then
+      echo 'Run this installer from an external terminal: its ancestor is Codex.' >&2
+      return 1
+    fi
+    cf_parent=$(awk -v p="$cf_ancestor" '$1 == p { print $2; exit }' "$tmp_dir/processes")
+    [ -n "$cf_parent" ] || break
+    [ "$cf_parent" != "$cf_ancestor" ] || break
+    cf_ancestor=$cf_parent
+  done
+}
+
+# Abort or obtain explicit consent before downloading large release archives.
+# Revalidate everything at cf_prepare immediately before making changes.
+cf_preflight_sessions() {
+  cf_guarded && return 0
+  cf_processes > "$tmp_dir/active-codex" || return 1
+  [ -s "$tmp_dir/active-codex" ] || return 0
+  cat "$tmp_dir/active-codex" >&2
+  cf_check_ancestor || return 1
+
+  if [ "$CF_DEFER_UNTIL_IDLE" = 1 ]; then
+    step "Waiting up to $CF_IDLE_WAIT_TIMEOUT seconds for Codex to exit naturally."
+    cf_idle_deadline=$(( $(date +%s) + CF_IDLE_WAIT_TIMEOUT ))
+    while [ -s "$tmp_dir/active-codex" ]; do
+      if [ "$(date +%s)" -ge "$cf_idle_deadline" ]; then
+        echo 'Codex is still running. Installation cancelled before downloading the package.' >&2
+        return 1
+      fi
+      sleep 2
+      cf_processes > "$tmp_dir/active-codex" || return 1
+    done
+    step 'Codex sessions are idle; continuing installation.'
+    return 0
+  fi
+
+  if [ "$CF_STOP_RUNNING" != 1 ]; then
+    if prompt_yes_no 'Stop running Codex sessions and any managed daemon to continue installation?'; then
+      CF_STOP_RUNNING=1
+    else
+      echo 'Codex was left running. Installation cancelled before downloading the package.' >&2
+      return 1
+    fi
+  fi
+}
+
+cf_preflight_daemon() {
+  if cf_guarded || [ "$CF_DAEMON_POLICY" = keep ]; then return 0; fi
+  if [ ! -d "$CODEX_HOME_DIR/app-server-daemon" ] &&
+    [ ! -d "$CODEX_HOME_DIR/packages/app-server-daemon" ]; then return 0; fi
+  cf_probe_cli=$(resolve_existing_codex)
+  if [ -z "$cf_probe_cli" ] && [ -x "$BIN_PATH" ]; then cf_probe_cli=$BIN_PATH; fi
+  if [ -z "$cf_probe_cli" ] && [ -x "$CURRENT_LINK/bin/codex" ]; then cf_probe_cli="$CURRENT_LINK/bin/codex"; fi
+  if [ -z "$cf_probe_cli" ] && [ -x "$CURRENT_LINK/codex" ]; then cf_probe_cli="$CURRENT_LINK/codex"; fi
+  [ -n "$cf_probe_cli" ] || return 0
+  if cf_run "$cf_probe_cli" app-server daemon version > "$tmp_dir/daemon-preflight" 2>/dev/null &&
+    grep -Eq '"status"[[:space:]]*:[[:space:]]*"running"' "$tmp_dir/daemon-preflight"; then
+    if [ "$CF_STOP_RUNNING" != 1 ]; then
+      if prompt_yes_no 'A managed app-server daemon is active. Stop and restart it during installation?'; then
+        CF_STOP_RUNNING=1
+      else
+        echo 'Managed daemon was left running. Installation cancelled before downloading the package.' >&2
+        return 1
+      fi
+    fi
+  fi
+}
+
 cf_prepare() {
   [ "$cf_prepared" = 0 ] || return 0
   cf_prepared=1
@@ -1397,20 +1492,15 @@ cf_prepare() {
     cf_processes > "$tmp_dir/active-codex" || return 1
     if [ -s "$tmp_dir/active-codex" ]; then
       cat "$tmp_dir/active-codex" >&2
+      cf_check_ancestor || return 1
       if [ "$CF_STOP_RUNNING" != 1 ]; then
-        echo 'Codex is running. Close the listed sessions, or use --stop-running from an external terminal.' >&2
-        return 1
-      fi
-      # An installer inside Codex must never terminate its own ancestor.
-      cf_ancestor=$$
-      while [ "$cf_ancestor" -gt 1 ]; do
-        if awk -v p="$cf_ancestor" '$1 == p { found=1 } END { exit !found }' "$tmp_dir/active-codex"; then
-          echo 'Run this installer from an external terminal: its ancestor is Codex.' >&2; return 1
+        if prompt_yes_no 'A Codex session started during download. Stop active sessions to finish installation?'; then
+          CF_STOP_RUNNING=1
+        else
+          echo 'Codex was left running; existing installation preserved.' >&2
+          return 1
         fi
-        cf_parent=$(awk -v p="$cf_ancestor" '$1 == p { print $2; exit }' "$tmp_dir/processes")
-        [ -n "$cf_parent" ] || break
-        cf_ancestor=$cf_parent
-      done
+      fi
     fi
   fi
   if ! cf_guarded && [ "$CF_STOP_RUNNING" = 1 ]; then
@@ -1451,7 +1541,12 @@ cf_prepare() {
       if cf_run "$cf_old_cli" app-server daemon version > "$cf_tx/daemon-version" 2>/dev/null &&
         grep -Eq '"status"[[:space:]]*:[[:space:]]*"running"' "$cf_tx/daemon-version"; then
         if [ "$CF_STOP_RUNNING" != 1 ]; then
-          echo 'A managed app-server daemon is running; close it or use --stop-running.' >&2; return 1
+          if prompt_yes_no 'A managed app-server daemon started during download. Stop and restart it?'; then
+            CF_STOP_RUNNING=1
+          else
+            echo 'Managed daemon was left running; existing installation preserved.' >&2
+            return 1
+          fi
         fi
         printf '%s\n' "$cf_old_cli" > "$cf_tx/restart-cli"
         cf_run "$cf_old_cli" app-server daemon stop > "$cf_tx/daemon-stop" 2>&1 || {
@@ -1620,6 +1715,12 @@ case "$CF_LOCK_TIMEOUT" in ''|*[!0-9]*) echo 'Invalid lock timeout.' >&2; exit 2
 [ "$CF_LOCK_TIMEOUT" -ge 1 ] && [ "$CF_LOCK_TIMEOUT" -le 600 ] || { echo 'Lock timeout must be 1..600.' >&2; exit 2; }
 case "$CF_TIMEOUT" in ''|*[!0-9]*) echo 'Invalid process timeout.' >&2; exit 2 ;; esac
 [ "$CF_TIMEOUT" -ge 1 ] && [ "$CF_TIMEOUT" -le 300 ] || { echo 'Process timeout must be 1..300.' >&2; exit 2; }
+case "$CF_IDLE_WAIT_TIMEOUT" in ''|*[!0-9]*) echo 'Invalid idle wait timeout.' >&2; exit 2 ;; esac
+[ "$CF_IDLE_WAIT_TIMEOUT" -ge 1 ] && [ "$CF_IDLE_WAIT_TIMEOUT" -le 3600 ] || { echo 'Idle wait timeout must be 1..3600.' >&2; exit 2; }
+if [ "$CF_DEFER_UNTIL_IDLE" = 1 ] && [ "$CF_STOP_RUNNING" = 1 ]; then
+  echo '--defer-until-idle and --stop-running are mutually exclusive.' >&2
+  exit 2
+fi
 case "$CF_DAEMON_POLICY" in auto|keep) ;; *) echo 'Invalid daemon policy.' >&2; exit 2 ;; esac
 # Shell profile entries use double quotes; reject characters interpreted there.
 case "$CODEX_HOME_DIR" in /*) ;; *) echo 'CODEX_HOME must be absolute.' >&2; exit 2 ;; esac
@@ -1808,6 +1909,8 @@ if [ "${CODEX_INSTALL_IF_LATEST:-}" = "1" ] || [ "${CODEX_INSTALL_IF_CURRENT:-}"
     exit 0
   fi
 fi
+cf_preflight_sessions
+cf_preflight_daemon
 cleanup_stale_install_artifacts
 
 if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target" "$install_layout"; then
