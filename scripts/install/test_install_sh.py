@@ -66,7 +66,7 @@ class InstallShTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(old.exists())
-            self.assertEqual(log.read_text(), f"npm verified codefx {VERSION}\n")
+            self.assertEqual(log.read_text(), f"npm attempted\nnpm verified codefx {VERSION}\n")
             visible = root / "install-bin/codex"
             self.assertEqual(subprocess.check_output([str(visible), "--version"], text=True).strip(), f"codefx {VERSION}")
             self.assertFalse(list(root.glob("codefx-install.*")))
@@ -1235,6 +1235,7 @@ def create_official_install(root: Path) -> tuple[Path, Path]:
     log = root / "uninstall.log"
     write_executable(bin_dir / "npm", f"""#!/bin/sh
 set -eu
+printf 'npm attempted\\n' >>'{log}'
 actual="$("$CODEX_INSTALL_DIR/codex" --version)"
 [ "$actual" = 'codefx {VERSION}' ]
 printf 'npm verified %s\\n' "$actual" >>'{log}'
