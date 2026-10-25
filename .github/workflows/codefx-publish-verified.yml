@@ -1,0 +1,90 @@
+name: Codefx publish verified native artifact
+on:
+  workflow_dispatch:
+    inputs:
+      source_run: {type: string, required: true, default: '40152919968'}
+      tag: {type: string, required: true, default: rust-v0.164.0}
+      target:
+        type: choice
+        required: true
+        options: [x86_64-pc-windows-msvc, aarch64-pc-windows-msvc, x86_64-unknown-linux-musl, aarch64-unknown-linux-musl, aarch64-apple-darwin, x86_64-apple-darwin]
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: codefx-publish-${{ inputs.tag }}-${{ inputs.target }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'hitmux/codefx'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN: ${{ inputs.source_run }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      TARGET: ${{ inputs.target }}
+    steps:
+      - name: Require successful native verification in the source run
+        id: proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
+          [[ "$RELEASE_TAG" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$RUNNER_TEMP/source-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?per_page=100" > "$RUNNER_TEMP/source-jobs.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/artifacts?per_page=100" > "$RUNNER_TEMP/source-artifacts.json"
+          gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha > "$RUNNER_TEMP/source-commit"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          temp = Path(os.environ['RUNNER_TEMP'])
+          run = json.loads((temp/'source-run.json').read_text())
+          assert run['path'] == '.github/workflows/codefx-platform-release.yml'
+          assert run['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY']
+          target = os.environ['TARGET']
+          jobs = json.loads((temp/'source-jobs.json').read_text())['jobs']
+          builds = [j for j in jobs if j['name'].endswith(f', {target}) / build')]
+          assert len(builds) == 1
+          assert any(s['name']=='Verify package on its native architecture' and s['conclusion']=='success' for s in builds[0]['steps'])
+          artifacts = json.loads((temp/'source-artifacts.json').read_text())['artifacts']
+          matches = [a for a in artifacts if a['name']==f'codefx-package-{target}' and not a['expired']]
+          assert len(matches) == 1
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'artifact_id={matches[0]["id"]}\n')
+          PY
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: codefx-package-${{ inputs.target }}
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+          path: dist
+      - name: Verify bytes and provenance, then publish without replacing different assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path('dist'); target=os.environ['TARGET']
+          archive=root/f'codex-package-{target}.tar.gz'
+          digest=hashlib.sha256(archive.read_bytes()).hexdigest()
+          assert (root/f'{target}.sha256').read_text().split()==[digest,archive.name]
+          provenance=json.loads((root/f'codefx-build-{target}.json').read_text())
+          assert provenance == {'repository':os.environ['GITHUB_REPOSITORY'], 'tag':os.environ['RELEASE_TAG'], 'target':target,
+              'source_commit':(Path(os.environ['RUNNER_TEMP'])/'source-commit').read_text().strip(), 'archive_sha256':digest}
+          assert (root/f'codefx-lock-{target}.patch').is_file()
+          PY
+          cd dist
+          for asset in "codex-package-$TARGET.tar.gz" "$TARGET.sha256" "codefx-build-$TARGET.json" "codefx-lock-$TARGET.patch"; do
+            digest="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets[] | [.name,.digest] | @tsv' | awk -F '\t' -v name="$asset" '$1 == name {print $2}')"
+            if [[ -n "$digest" ]]; then
+              [[ "$digest" == "sha256:$(sha256sum "$asset" | cut -d ' ' -f 1)" ]]
+            else
+              gh release upload "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY"
+              uploaded="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets[] | [.name,.digest] | @tsv' | awk -F '\t' -v name="$asset" '$1 == name {print $2}')"
+              [[ "$uploaded" == "sha256:$(sha256sum "$asset" | cut -d ' ' -f 1)" ]]
+            fi
+          done
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/${{ steps.proof.outputs.artifact_id }}"

@@ -1106,6 +1106,9 @@ def run_installer_in(
                   exit 22
                 fi
                 ;;
+              https://github.com/hitmux/codefx/releases/download/*/*.sha256)
+                cp "$CODEX_TEST_CHECKSUM_PATH" "$output"
+                ;;
               https://github.com/hitmux/codefx/releases/download/*/codex-package_SHA256SUMS)
                 if [ "$CODEX_TEST_RELEASES_MODE" = "corrupt_checksum_and_github" ]; then
                   printf '<html>proxy error</html>\n' >"$output"

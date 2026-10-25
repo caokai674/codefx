@@ -50,6 +50,15 @@ class Transactions(unittest.TestCase):
             self.assertFalse((root / 'home/.profile').exists())
             self.assertFalse((root / 'install-bin').exists())
 
+    def test_per_platform_checksum_allows_verified_partial_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve(); archive, checksum, metadata = self.package(root)
+            data = json.loads(metadata)
+            data['assets'][1]['name'] = TARGET + '.sha256'
+            result = self.run_install(root, (archive, checksum, json.dumps(data)))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(TARGET + '.sha256', (root / 'requests.log').read_text())
+
     def test_rejects_traversal_links_and_metadata_mismatch(self):
         for bad in ('traversal', 'symlink', 'hardlink', 'target', 'entrypoint'):
             with self.subTest(bad=bad), tempfile.TemporaryDirectory() as tmp:

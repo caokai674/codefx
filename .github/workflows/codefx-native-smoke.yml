@@ -3,30 +3,57 @@ on:
   workflow_dispatch:
     inputs:
       tag: {type: string, required: true, default: rust-v0.164.0}
+      targets: {type: string, required: false, default: all}
   workflow_call:
     inputs:
       tag: {type: string, required: true}
+      targets: {type: string, required: false, default: all}
 permissions:
   contents: read
 jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          REQUESTED_TARGETS: ${{ inputs.targets }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          tag = os.environ['RELEASE_TAG']
+          assert re.fullmatch(r'rust-v[0-9]+\.[0-9]+\.[0-9]+', tag)
+          pairs = [('ubuntu-24.04','x86_64-unknown-linux-musl'), ('ubuntu-24.04-arm','aarch64-unknown-linux-musl'),
+                   ('macos-15','aarch64-apple-darwin'), ('macos-15-intel','x86_64-apple-darwin'),
+                   ('windows-2025','x86_64-pc-windows-msvc'), ('windows-11-arm','aarch64-pc-windows-msvc')]
+          requested = os.environ['REQUESTED_TARGETS']
+          if requested == 'available':
+              release = json.loads(subprocess.check_output(['gh','api',f'repos/hitmux/codefx/releases/tags/{tag}']))
+              names = {a['name'] for a in release['assets'] if re.fullmatch(r'sha256:[0-9a-f]{64}', a.get('digest') or '')}
+              pairs = [(runner,target) for runner,target in pairs if f'codex-package-{target}.tar.gz' in names and f'{target}.sha256' in names]
+          elif requested != 'all':
+              pairs = [(runner,target) for runner,target in pairs if target == requested]
+          assert pairs, 'No verified published targets selected'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('matrix=' + json.dumps({'include':[{'os':runner,'target':target} for runner,target in pairs]}) + '\n')
+          PY
   install:
+    needs: prepare
     strategy:
       fail-fast: false
       max-parallel: 2
-      matrix:
-        include:
-          - {os: ubuntu-24.04, target: x86_64-unknown-linux-musl}
-          - {os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl}
-          - {os: macos-15, target: aarch64-apple-darwin}
-          - {os: macos-15-intel, target: x86_64-apple-darwin}
-          - {os: windows-2025, target: x86_64-pc-windows-msvc}
-          - {os: windows-11-arm, target: aarch64-pc-windows-msvc}
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       EXPECTED_TARGET: ${{ matrix.target }}
       CODEFX_GITHUB_REPO: hitmux/codefx
+      CODEFX_INSTALL_REF: ${{ github.sha }}
       CODEX_NON_INTERACTIVE: '1'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd

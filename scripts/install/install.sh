@@ -497,6 +497,7 @@ release_asset_digest() {
 select_release_assets() {
   package_asset="codex-package-$vendor_target.tar.gz"
   checksum_asset="codex-package_SHA256SUMS"
+  if release_asset_exists "$vendor_target.sha256"; then checksum_asset="$vendor_target.sha256"; fi
   download_fallback_url=""
   checksum_fallback_url=""
 
@@ -532,6 +533,7 @@ package_archive_digest() {
   manifest_path="$2"
 
   digest="$(awk -v asset="$asset" '
+    { sub(/\r$/, "") }
     $2 == asset && length($1) == 64 && $1 !~ /[^0-9a-fA-F]/ {
       print tolower($1)
       found = 1
@@ -545,7 +547,7 @@ package_archive_digest() {
   ' "$manifest_path" 2>/dev/null || true)"
 
   if [ -z "$digest" ]; then
-    echo "Could not find SHA-256 digest for $asset in codex-package_SHA256SUMS." >&2
+    echo "Could not find SHA-256 digest for $asset in $(basename "$manifest_path")." >&2
     return 1
   fi
 

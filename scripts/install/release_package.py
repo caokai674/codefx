@@ -34,7 +34,7 @@ def normalize():
             expected['version'] = version
         if expected != new:
             raise RuntimeError('Dependency resolution changed')
-    (root / 'Cargo.lock').write_text(updated)
+    (root / 'Cargo.lock').write_text(updated, newline='\n')
 
 
 def verify(archive, target, version):
@@ -79,16 +79,27 @@ def main():
     elif args.action == 'verify':
         archive = args.directory / f'codex-package-{args.target}.tar.gz'
         verify(archive, args.target, args.version)
-        (args.directory / f'{args.target}.sha256').write_text(f'{digest(archive)}  {archive.name}\n')
+        checksum_path = args.directory / f'{args.target}.sha256'
+        expected_checksum = [digest(archive), archive.name]
+        if checksum_path.exists():
+            if checksum_path.read_text().split() != expected_checksum:
+                raise RuntimeError('Published platform checksum does not match the verified archive')
+        else:
+            checksum_path.write_text(f'{expected_checksum[0]}  {archive.name}\n', newline='\n')
         provenance = {'repository': os.getenv('GITHUB_REPOSITORY'), 'tag': os.getenv('RELEASE_TAG'), 'target': args.target,
                       'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                       'archive_sha256': digest(archive)}
-        (args.directory / f'codefx-build-{args.target}.json').write_text(json.dumps(provenance, indent=2) + '\n')
+        provenance_path = args.directory / f'codefx-build-{args.target}.json'
+        if provenance_path.exists():
+            if json.loads(provenance_path.read_text()) != provenance:
+                raise RuntimeError('Published package provenance does not match the verified source')
+        else:
+            provenance_path.write_text(json.dumps(provenance, indent=2) + '\n', newline='\n')
     else:
         archives = sorted(args.directory.glob('codex-package-*.tar.gz'))
         if len(archives) != 6:
             raise RuntimeError(f'Expected six architecture packages, found {len(archives)}')
-        (args.directory / 'codex-package_SHA256SUMS').write_text(''.join(f'{digest(p)}  {p.name}\n' for p in archives))
+        (args.directory / 'codex-package_SHA256SUMS').write_text(''.join(f'{digest(p)}  {p.name}\n' for p in archives), newline='\n')
 
 
 if __name__ == '__main__':

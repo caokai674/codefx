@@ -72,8 +72,8 @@ jobs:
             file="codex-package-$target.tar.gz"
             digest="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets[] | [.name,.digest] | @tsv' | awk -F '\t' -v name="$file" '$1 == name {print $2}')"
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-            [[ "$(cat "$target.sha256")" == "${digest#sha256:}  $file" ]]
-            cat "$target.sha256" >> codex-package_SHA256SUMS
+            python3 -c 'from pathlib import Path; import sys; assert Path(sys.argv[1]).read_text().split() == [sys.argv[2],sys.argv[3]]' "$target.sha256" "${digest#sha256:}" "$file"
+            printf '%s  %s\n' "${digest#sha256:}" "$file" >> codex-package_SHA256SUMS
           done
           gh release upload "$RELEASE_TAG" codex-package_SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
   smoke:

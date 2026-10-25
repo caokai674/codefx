@@ -184,6 +184,7 @@ function Resolve-ReleaseAssetSelection {
     $releaseMetadata = $ResolvedRelease.Metadata
     $packageAsset = "codex-package-$Target.tar.gz"
     $checksumAsset = "codex-package_SHA256SUMS"
+    if ($null -ne (Find-ReleaseAssetMetadata -AssetName "$Target.sha256" -ReleaseMetadata $releaseMetadata)) { $checksumAsset = "$Target.sha256" }
     $packageUrl = $null
     $packageFallbackUrl = $null
     $checksumUrl = $null
@@ -202,6 +203,7 @@ function Resolve-ReleaseAssetSelection {
             PackageAsset = $packageAsset
             PackageMetadata = $packageMetadata
             ChecksumMetadata = $checksumMetadata
+            ChecksumAsset = $checksumAsset
             InstallLayout = "Package"
         }
     }
@@ -222,6 +224,7 @@ function Resolve-ReleaseAssetSelection {
         PackageAsset = $packageAsset
         PackageMetadata = $packageMetadata
         ChecksumMetadata = $null
+        ChecksumAsset = "codex-package_SHA256SUMS"
         InstallLayout = "LegacyPlatformNpm"
     }
 }
@@ -1369,6 +1372,7 @@ $oldStandaloneBackup = $null
 
 $checksumAsset = "codex-package_SHA256SUMS"
 $assetSelection = Resolve-ReleaseAssetSelection -ResolvedRelease $resolvedRelease -Target $target -NpmTag $npmTag
+$checksumAsset = $assetSelection.ChecksumAsset
 $packageAsset = $assetSelection.PackageAsset
 $packageMetadata = $assetSelection.PackageMetadata
 $checksumMetadata = $assetSelection.ChecksumMetadata

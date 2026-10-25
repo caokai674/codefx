@@ -53,7 +53,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
     function Invoke-WebRequest {
         param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile, [int]$TimeoutSec)
         $fixture.Downloads++
-        if ($Uri.EndsWith('codex-package_SHA256SUMS')) { Copy-Item -LiteralPath $fixture.Sums -Destination $OutFile }
+        if ($Uri.EndsWith('codex-package_SHA256SUMS') -or $Uri.EndsWith('.sha256')) { Copy-Item -LiteralPath $fixture.Sums -Destination $OutFile }
         else {
             Copy-Item -LiteralPath $fixture.Archive -Destination $OutFile
             if ($fixture.BadHash) { Add-Content -LiteralPath $OutFile -Value 'corruption' }
@@ -75,7 +75,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
     function bun { $fixture.ManagerCalls++; throw 'Unexpected package-manager mutation.' }
     function vp { $fixture.ManagerCalls++; throw 'Unexpected package-manager mutation.' }
 
-    foreach ($case in @('success','checksum','target','active','dry-run','visible','daemon','repeat','guarded','daemon-running','active-timeout','committed-recovery','interrupted-recovery','cache-rollback','flat-native','flat-rollback','empty-native','empty-rollback','unknown-native')) {
+    foreach ($case in @('success','checksum','target','active','dry-run','visible','daemon','repeat','guarded','daemon-running','active-timeout','committed-recovery','interrupted-recovery','cache-rollback','flat-native','flat-rollback','empty-native','empty-rollback','unknown-native','sidecar')) {
         Write-Host "Native Windows case: $case"
         $caseRoot = Join-Path $root $case
         $package = Join-Path $caseRoot 'package'
@@ -95,6 +95,10 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
             @{ name=$asset; digest=('sha256:' + (Get-FileHash $fixture.Archive).Hash.ToLowerInvariant()); browser_download_url="https://fixture.invalid/$asset" },
             @{ name='codex-package_SHA256SUMS'; digest=('sha256:' + (Get-FileHash $fixture.Sums).Hash.ToLowerInvariant()); browser_download_url='https://fixture.invalid/codex-package_SHA256SUMS' }
         ) }
+        if ($case -eq 'sidecar') {
+            $fixture.Metadata.assets[1].name = "$target.sha256"
+            $fixture.Metadata.assets[1].browser_download_url = "https://fixture.invalid/$target.sha256"
+        }
         $fixture.Active = $case -in @('active','active-timeout'); $fixture.BadHash = $case -eq 'checksum'; $fixture.FailCache = $case -eq 'cache-rollback'
         $env:CODEX_HOME = Join-Path $caseRoot 'home'
         $env:CODEX_INSTALL_DIR = Join-Path $caseRoot 'visible bin'
