@@ -1046,7 +1046,7 @@ function Invoke-CodefxBounded {
 
 function Get-CodefxProcesses {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $all = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'codex%.exe' OR Name LIKE 'codefx%.exe'" -ErrorAction Stop)
+    $all = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'codex%.exe' OR Name LIKE 'codefx%.exe'" -OperationTimeoutSec ([uint32][Math]::Min(30, $ProcessTimeout)) -ErrorAction Stop)
     foreach ($entry in $all) {
         if ($entry.Name -notmatch '^(codex|codefx)([-_.].*)?\.exe$') { continue }
         $owner = Invoke-CimMethod -InputObject $entry -MethodName GetOwnerSid -ErrorAction Stop
@@ -1175,12 +1175,27 @@ function Start-CodefxTransaction {
         if ($active.Count -gt 0) {
             Write-Host ($active | Select-Object ProcessId, ExecutablePath | Out-String)
             if (-not $StopRunning) { throw 'Codex is running. Close the listed sessions, or use -StopRunning from an external terminal.' }
-            $ancestor = $PID
-            while ($ancestor -gt 0) {
-                if ($active.ProcessId -contains $ancestor) { throw 'Run the installer from an external terminal; its ancestor is Codex.' }
-                $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $ancestor" -ErrorAction Stop
-                if ($null -eq $parent) { break }
-                $ancestor = $parent.ParentProcessId
+            $installerStarted = (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToUniversalTime()
+            # A process created after this PowerShell host cannot be its ancestor.
+            # This also avoids walking stale service-parent IDs for a new daemon.
+            $possibleAncestors = @($active | Where-Object {
+                $null -eq $_.PSObject.Properties['CreationDate'] -or $null -eq $_.CreationDate -or
+                    $_.CreationDate.ToUniversalTime() -le $installerStarted
+            })
+            if ($possibleAncestors.Count -gt 0) {
+                $ancestor = [long]$PID
+                $visited = New-Object 'System.Collections.Generic.HashSet[long]'
+                $ancestryWatch = [Diagnostics.Stopwatch]::StartNew()
+                while ($ancestor -gt 4) {
+                    if (-not $visited.Add($ancestor) -or $visited.Count -gt 128 -or $ancestryWatch.Elapsed.TotalSeconds -ge $ProcessTimeout) {
+                        throw "Cannot safely inspect process ancestry (cycle, reused PID, or timeout at PID $ancestor). Run from a fresh external terminal."
+                    }
+                    if ($possibleAncestors.ProcessId -contains $ancestor) { throw 'Run the installer from an external terminal; its ancestor is Codex.' }
+                    $remaining = [uint32][Math]::Max(1, [Math]::Min(10, $ProcessTimeout - $ancestryWatch.Elapsed.TotalSeconds))
+                    $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $ancestor" -OperationTimeoutSec $remaining -ErrorAction Stop
+                    if ($null -eq $parent) { break }
+                    $ancestor = [long]$parent.ParentProcessId
+                }
             }
         }
     }
