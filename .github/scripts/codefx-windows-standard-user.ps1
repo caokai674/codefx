@@ -90,8 +90,8 @@ exit $result
     # Task Scheduler creates the test process independently of the Actions
     # runner's job, while retaining a normal user token and default protections.
     $action = New-ScheduledTaskAction -Execute $executable -Argument $arguments -WorkingDirectory $root
-    $trigger = New-ScheduledTaskTrigger -Once -At ([DateTime]::Now.AddHours(1))
-    $null = Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -User "$env:COMPUTERNAME\$user" -Password $password -RunLevel Limited -Force
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 12)
+    $null = Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -User "$env:COMPUTERNAME\$user" -Password $password -RunLevel Limited -Force
     $registered = $true
     $launchedAt = [DateTime]::Now.AddSeconds(-2)
     Start-ScheduledTask -TaskName $taskName
@@ -104,6 +104,8 @@ exit $result
             ($watch.Elapsed.TotalSeconds -gt 90 -and $info.LastRunTime -lt $launchedAt)) {
             Write-Host (Export-ScheduledTask -TaskName $taskName)
             Write-Host ($info | Format-List LastRunTime,LastTaskResult,NextRunTime | Out-String)
+            Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-TaskScheduler/Operational';StartTime=$launchedAt.AddSeconds(-10)} -ErrorAction SilentlyContinue |
+                Where-Object { $_.Message -like "*$taskName*" } | Select-Object Id,Message | Format-List | Out-String | Write-Host
             throw ("Scheduled CI check has no completion record: " + $info.LastTaskResult)
         }
         Start-Sleep -Milliseconds 500
