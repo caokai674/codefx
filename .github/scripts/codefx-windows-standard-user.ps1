@@ -68,9 +68,21 @@ exit $result
     # Limit access to this test account and the runner administrator/SYSTEM.
     $sid = (New-Object Security.Principal.NTAccount($env:COMPUTERNAME, $user)).Translate([Security.Principal.SecurityIdentifier]).Value
     $runnerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $aclResult = & icacls.exe $root /inheritance:r /grant:r "*${sid}:(OI)(CI)F" "*${runnerSid}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' /T /Q 2>&1
-    if ($LASTEXITCODE -ne 0) { throw ('Could not protect the isolated CI directory: ' + ($aclResult | Out-String)) }
-    Write-Host ("Isolated CI directory ACL: " + (Get-Acl -LiteralPath $root).Sddl)
+    # Set file and directory ACLs explicitly: inherited directory-only flags on
+    # protected files can otherwise leave a readable root with unreadable files.
+    $items = @((Get-Item -LiteralPath $root)) + @(Get-ChildItem -LiteralPath $root -Recurse -Force)
+    foreach ($item in $items) {
+        $acl = if ($item.PSIsContainer) { New-Object Security.AccessControl.DirectorySecurity } else { New-Object Security.AccessControl.FileSecurity }
+        $acl.SetAccessRuleProtection($true, $false)
+        $acl.SetOwner((New-Object Security.Principal.SecurityIdentifier($runnerSid)))
+        $inherit = if ($item.PSIsContainer) { [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' } else { [Security.AccessControl.InheritanceFlags]::None }
+        foreach ($identity in @($sid, $runnerSid, 'S-1-5-18')) {
+            $rule = New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($identity)), [Security.AccessControl.FileSystemRights]::FullControl, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+            $null = $acl.AddAccessRule($rule)
+        }
+        Set-Acl -LiteralPath $item.FullName -AclObject $acl
+    }
+    Write-Host ("Isolated launcher ACL: " + (Get-Acl -LiteralPath (Join-Path $root 'launch.ps1')).Sddl)
     $executable = (Get-Command ($Engine + '.exe') -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $credential = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$user", (ConvertTo-SecureString $password -AsPlainText -Force))
     $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $root 'launch.ps1') + '" "' + $root + '" "' + $scriptName + '"'

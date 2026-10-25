@@ -10,6 +10,7 @@ foreach ($name in @('install.ps1', 'install-codefx.ps1')) {
     )
     if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
     if ($name -eq 'install.ps1') {
+        $installerAst = $ast
         $versionFunction = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -35,6 +36,40 @@ try {
         $actual = Get-VersionFromBinary -CodexPath $fakeBinary
         if ($actual -cne $case.Expected) {
             throw "Unexpected identity result for $($case.Output), exit $($case.ExitCode): $actual"
+        }
+    }
+
+    if ($env:OS -eq 'Windows_NT') {
+        $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+        if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            foreach ($name in @('Test-CodefxGuardedUpdate','Test-CodefxDaemonInstalled','Assert-CodefxDaemonContext','Start-CodefxTransaction')) {
+                $definition = $installerAst.Find({ param($node)
+                    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+                }, $true)
+                if ($null -eq $definition) { throw "Missing $name" }
+                Invoke-Expression $definition.Extent.Text
+            }
+            $savedLatest = $env:CODEX_INSTALL_IF_LATEST; $savedCurrent = $env:CODEX_INSTALL_IF_CURRENT
+            try {
+                $env:CODEX_INSTALL_IF_LATEST = $null; $env:CODEX_INSTALL_IF_CURRENT = $null
+                $daemonOnly = $false; $oldUpdaterParent = $false; $KeepDaemon = $false
+                $codexHome = Join-Path $testRoot 'elevated-preflight'
+                $selection = Join-Path $codexHome 'packages\app-server-daemon\current'
+                New-Item -ItemType Directory -Path $selection | Out-Null
+                $marker = Join-Path $selection 'preserve.txt'
+                [IO.File]::WriteAllText($marker, 'original daemon')
+                $script:Cf = @{ Prepared = $false }
+                $rejected = $false
+                try { Start-CodefxTransaction } catch {
+                    if ($_.Exception.Message -notmatch 'non-elevated terminal') { throw }
+                    $rejected = $true
+                }
+                if (-not $rejected -or $script:Cf.Prepared -or [IO.File]::ReadAllText($marker) -cne 'original daemon') {
+                    throw 'Elevated daemon migration must stop before preparing a transaction or stopping the original daemon.'
+                }
+            } finally {
+                $env:CODEX_INSTALL_IF_LATEST = $savedLatest; $env:CODEX_INSTALL_IF_CURRENT = $savedCurrent
+            }
         }
     }
 

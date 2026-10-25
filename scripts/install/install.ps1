@@ -1023,12 +1023,19 @@ function Invoke-CodefxBounded {
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $start
     try {
+        $watch = [Diagnostics.Stopwatch]::StartNew()
         if (-not $proc.Start()) { throw "Cannot start $File" }
         $outTask = $proc.StandardOutput.ReadToEndAsync()
         $errTask = $proc.StandardError.ReadToEndAsync()
         if (-not $proc.WaitForExit($ProcessTimeout * 1000)) {
             try { $proc.Kill() } catch {}
             throw "Timed out running $File $($Arguments -join ' ')"
+        }
+        # A shim can exit while its child still holds the redirected pipes.
+        # Bound draining those pipes by the same overall lifecycle deadline.
+        $remaining = [int][Math]::Max(0, $ProcessTimeout * 1000 - $watch.ElapsedMilliseconds)
+        if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outTask, $errTask), $remaining)) {
+            throw "Timed out reading output from $File"
         }
         $stdout = $outTask.GetAwaiter().GetResult()
         $stderr = $errTask.GetAwaiter().GetResult()
@@ -1089,8 +1096,9 @@ function Save-CodefxPath {
 }
 
 function Test-CodefxDaemonInstalled {
-    if (Test-Path -LiteralPath (Join-Path $codexHome 'packages\app-server-daemon\current')) { return $true }
-    foreach ($name in @('app-server.pid','app-server.stderr.log','app-server-updater.pid','app-server-updater.stderr.log')) {
+    $selection = Get-Item -LiteralPath (Join-Path $codexHome 'packages\app-server-daemon\current') -Force -ErrorAction SilentlyContinue
+    if ($null -ne $selection) { return $true }
+    foreach ($name in @('daemon.pid','daemon.stderr.log','daemon-updater.pid','daemon-updater.stderr.log','app-server.pid','app-server.stderr.log','app-server-updater.pid','app-server-updater.stderr.log')) {
         if (Test-Path -LiteralPath (Join-Path $codexHome "app-server-daemon\$name")) { return $true }
     }
     return $false

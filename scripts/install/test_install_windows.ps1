@@ -17,6 +17,12 @@ using System;
 using System.IO;
 public class CodefxFixture {
   public static int Main(string[] args) {
+    if (args.Length > 0 && args[0] == "--hold-output-child") { System.Threading.Thread.Sleep(5000); return 0; }
+    if (args.Length > 0 && args[0] == "--hold-output") {
+      var start = new System.Diagnostics.ProcessStartInfo(System.Reflection.Assembly.GetExecutingAssembly().Location, "--hold-output-child");
+      start.UseShellExecute = false;
+      System.Diagnostics.Process.Start(start); return 0;
+    }
     if (args.Length > 0 && args[0] == "--version") {
       string file = Environment.GetEnvironmentVariable("CODEFX_FIXTURE_COUNTER");
       int count = File.Exists(file) ? int.Parse(File.ReadAllText(file)) + 1 : 1;
@@ -37,6 +43,20 @@ Add-Type -TypeDefinition 'using System; public class OldFixture { public static 
 '@ | Set-Content -LiteralPath $compile
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $compile $root
     if ($LASTEXITCODE -ne 0) { throw 'Fixture compilation failed.' }
+    $tokens = $null; $parseErrors = $null
+    $installerAst = [System.Management.Automation.Language.Parser]::ParseFile($base, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+    $bounded = $installerAst.Find({ param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-CodefxBounded'
+    }, $true)
+    Invoke-Expression $bounded.Extent.Text
+    $ProcessTimeout = 1
+    $watch = [Diagnostics.Stopwatch]::StartNew(); $outputTimedOut = $false
+    try { $null = Invoke-CodefxBounded (Join-Path $root 'new.exe') @('--hold-output') } catch {
+        if ($_.Exception.Message -notmatch 'Timed out') { throw }
+        $outputTimedOut = $true
+    }
+    if (-not $outputTimedOut -or $watch.Elapsed.TotalSeconds -gt 4) { throw 'Inherited child output pipes bypassed the lifecycle timeout.' }
     $archiveWriter = Join-Path $root 'archive.py'
     @'
 from pathlib import Path

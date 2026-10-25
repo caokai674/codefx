@@ -1561,6 +1561,10 @@ cf_migrate_daemon() {
   [ "$CF_DAEMON_POLICY" != keep ] || return 0
   if [ -e "$CODEX_HOME_DIR/packages/app-server-daemon/current" ] ||
     [ -L "$CODEX_HOME_DIR/packages/app-server-daemon/current" ] || [ -f "$cf_tx/restart-cli" ] ||
+    [ -f "$CODEX_HOME_DIR/app-server-daemon/daemon.pid" ] ||
+    [ -f "$CODEX_HOME_DIR/app-server-daemon/daemon.stderr.log" ] ||
+    [ -f "$CODEX_HOME_DIR/app-server-daemon/daemon-updater.pid" ] ||
+    [ -f "$CODEX_HOME_DIR/app-server-daemon/daemon-updater.stderr.log" ] ||
     [ -f "$CODEX_HOME_DIR/app-server-daemon/app-server.pid" ] ||
     [ -f "$CODEX_HOME_DIR/app-server-daemon/app-server.stderr.log" ] ||
     [ -f "$CODEX_HOME_DIR/app-server-daemon/app-server-updater.pid" ] ||
