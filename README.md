@@ -11,22 +11,46 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ## Quickstart
 
-### Codefx installation validation
+### Installing Codefx
 
-[Codefx CLI 0.164.0](https://github.com/hitmux/codefx/releases/tag/rust-v0.164.0) is a stable release. Cross-platform installer hardening is undergoing native validation:
+[Codefx CLI 0.164.0](https://github.com/hitmux/codefx/releases/tag/rust-v0.164.0) is a stable release. Native packages and installer checks cover:
 
-| Platform | Package | Real installation and daemon checks |
-| --- | --- | --- |
-| Linux x86_64 / ARM64 (musl) | Published | Passed |
-| macOS Apple Silicon | Published | Passed |
-| Windows x64 / ARM64 | Published | Passed |
-| macOS Intel | Building | Pending |
+| Platform | Architectures |
+| --- | --- |
+| Linux (musl) | x86_64, ARM64 |
+| macOS | Intel, Apple Silicon |
+| Windows | x64, ARM64 |
 
-One-command replacement instructions are paused while the complete platform validation finishes. Keep your existing Codex installation. The revised installers validate the package before changing commands and retain existing package-manager registrations.
+Use the reviewed installers below or the [verified installer bundle](https://github.com/hitmux/codefx/releases/download/rust-v0.164.0/codefx-installers-38f48572fe9f.zip). The original `rust-v0.164.0` source archive contains historical wrappers that uninstall existing packages before downloading; the revised installers are maintained independently of that binary build tag.
 
-The original `rust-v0.164.0` source archive retains historical wrappers that uninstall old packages before downloading. Use the independently maintained revised installers only after validation completes.
+Linux / macOS — download the complete bootstrap before executing it:
 
-[Installer source and recovery guide](docs/codefx-installer.md) · [Native package build progress](https://github.com/hitmux/codefx/actions/runs/40152919968) · [Three-platform safety checks](https://github.com/hitmux/codefx/actions/runs/40169307946) · [Windows ARM64 installation and daemon checks](https://github.com/hitmux/codefx/actions/runs/40169286206)
+```sh
+(
+  set -eu
+  installer="$(mktemp)"
+  trap 'rm -f "$installer"' EXIT
+  curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 10 --max-time 120 \
+    https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.sh -o "$installer"
+  sh "$installer"
+)
+```
+
+Windows — run in a non-elevated PowerShell:
+
+```powershell
+& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop -Uri 'https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.ps1').Content))
+```
+
+Verify the selected command with `codex --version`; the executable remains named `codex` and reports `codefx 0.164.0`.
+
+The installer verifies release checksums, archive paths, package metadata and the staged executable before switching commands. It records the previous installation and restores it if cutover fails. Existing npm, pnpm, Bun, Vite+ and Homebrew registrations remain available; the new native command uses a dedicated installation directory.
+
+Running Codex sessions are detected before cutover. Save work and close them first, or use `--stop-running` on Unix / `-StopRunning` on Windows from an external terminal. The installer uses bounded shutdown requests; Windows console sessions without a closeable window may need to be closed manually. Configured independent daemons are migrated through the verified new CLI, with their original running or stopped state preserved. This migration pins the daemon to the verified CLI package; `codex app-server daemon update` returns it to Codefx production updates.
+
+Codefx update checks use Codefx releases. The first migration clears the shared upstream version cache, with its original contents retained in the transaction backup. `--release` / `-Release` pins a version; the default follows the latest stable release.
+
+[Installer options and recovery guide](docs/codefx-installer.md) · [Linux/macOS source](scripts/install/install-codefx.sh) · [Windows source](scripts/install/install-codefx.ps1) · [Native installation checks](https://github.com/hitmux/codefx/actions/runs/40171185576)
 
 ### Using Codex with your ChatGPT plan
 
