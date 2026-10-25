@@ -95,7 +95,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
     function bun { $fixture.ManagerCalls++; throw 'Unexpected package-manager mutation.' }
     function vp { $fixture.ManagerCalls++; throw 'Unexpected package-manager mutation.' }
 
-    foreach ($case in @('success','checksum','target','active','dry-run','visible','daemon','repeat','guarded','daemon-running','active-timeout','committed-recovery','interrupted-recovery','cache-rollback','flat-native','flat-rollback','empty-native','empty-rollback','unknown-native','sidecar')) {
+    foreach ($case in @('success','checksum','target','active','dry-run','visible','daemon','repeat','guarded','daemon-running','active-timeout','committed-recovery','interrupted-recovery','cache-rollback','flat-native','flat-rollback','empty-native','empty-rollback','unknown-native','sidecar','daemon-managed-only')) {
         Write-Host "Native Windows case: $case"
         $caseRoot = Join-Path $root $case
         $package = Join-Path $caseRoot 'package'
@@ -142,7 +142,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
         $cache = Join-Path $env:CODEX_HOME 'version.json'
         $oldCache = '{"latest_version":"999.0.0","dismissed_version":"999.0.0"}'
         [IO.File]::WriteAllText($cache, $oldCache)
-        if ($case -in @('daemon','daemon-running')) {
+        if ($case -in @('daemon','daemon-running','daemon-managed-only')) {
             New-Item -ItemType Directory -Force -Path (Join-Path $env:CODEX_HOME 'app-server-daemon') | Out-Null
             '{}' | Set-Content -LiteralPath (Join-Path $env:CODEX_HOME 'app-server-daemon\settings.json')
             $daemonRelease = Join-Path $env:CODEX_HOME 'packages\app-server-daemon\releases\old'
@@ -162,10 +162,16 @@ exit /b 1
             'running' | Set-Content -LiteralPath ($env:CODEFX_FIXTURE_COUNTER + '.daemon')
             $env:Path = "$shims;$env:Path"
         }
+        if ($case -eq 'daemon-managed-only') {
+            [IO.Directory]::Delete($env:CODEX_INSTALL_DIR)
+            Copy-Item -LiteralPath (Join-Path $root 'new.exe') -Destination (Join-Path $release 'bin\codex.exe') -Force
+            'running' | Set-Content -LiteralPath ($env:CODEFX_FIXTURE_COUNTER + '.daemon')
+            $env:Path = "$env:SystemRoot\System32;$env:SystemRoot;$PSHOME"
+        }
         $failed = $false
         try {
             if ($case -eq 'active-timeout') { & $base -Release '0.164.0' -StopRunning -ProcessTimeout 2 }
-            elseif ($case -eq 'daemon-running') { & $base -Release '0.164.0' -StopRunning -ProcessTimeout 10 }
+            elseif ($case -in @('daemon-running','daemon-managed-only')) { & $base -Release '0.164.0' -StopRunning -ProcessTimeout 10 }
             elseif ($case -eq 'dry-run') { & $base -Release '0.164.0' -DryRun }
             else { & $base -Release '0.164.0' -ProcessTimeout 3 }
         } catch { $failed = $true; Write-Host "Expected failure if negative case: $_" }
@@ -212,7 +218,7 @@ exit /b 1
                 try { & $base -ProcessTimeout 3 } finally { Remove-Item Env:CODEX_INSTALL_IF_LATEST, Env:CODEX_UPDATE_FROM_RELEASE }
             }
         }
-        if ($case -eq 'daemon-running' -and -not (Test-Path -LiteralPath ($env:CODEFX_FIXTURE_COUNTER + '.daemon'))) { throw 'Running daemon state was not restored.' }
+        if ($case -in @('daemon-running','daemon-managed-only') -and -not (Test-Path -LiteralPath ($env:CODEFX_FIXTURE_COUNTER + '.daemon'))) { throw 'Running daemon state was not restored.' }
         if (@(Get-ChildItem -LiteralPath (Join-Path $standalone 'releases') -Directory -Force -Filter '.staging.*').Count -gt 0) { throw "Unfinished staging files for $case." }
         if (Test-Path -LiteralPath (Join-Path $standalone '.transaction')) { throw "Unfinished transaction for $case." }
         $env:Path = $savedEnv.Path

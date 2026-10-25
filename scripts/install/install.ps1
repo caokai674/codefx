@@ -1206,6 +1206,9 @@ function Start-CodefxTransaction {
     if (-not (Test-CodefxGuardedUpdate)) {
         $oldCli = Get-ExistingCodexCommand
         if (-not $oldCli -and (Test-Path -LiteralPath (Join-Path $visibleBinDir 'codex.exe'))) { $oldCli = Join-Path $visibleBinDir 'codex.exe' }
+        foreach ($candidate in @((Join-Path $currentDir 'bin\codex.exe'), (Join-Path $currentDir 'codex.exe'))) {
+            if (-not $oldCli -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { $oldCli = $candidate }
+        }
         if ($oldCli -and -not $KeepDaemon -and
             ((Test-Path -LiteralPath (Join-Path $codexHome 'app-server-daemon')) -or
              (Test-Path -LiteralPath (Join-Path $codexHome 'packages\app-server-daemon')))) {

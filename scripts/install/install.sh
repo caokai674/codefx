@@ -1443,6 +1443,8 @@ cf_prepare() {
   if ! cf_guarded; then
     cf_old_cli=$(resolve_existing_codex)
     if [ -z "$cf_old_cli" ] && [ -x "$BIN_PATH" ]; then cf_old_cli=$BIN_PATH; fi
+    if [ -z "$cf_old_cli" ] && [ -x "$CURRENT_LINK/bin/codex" ]; then cf_old_cli="$CURRENT_LINK/bin/codex"; fi
+    if [ -z "$cf_old_cli" ] && [ -x "$CURRENT_LINK/codex" ]; then cf_old_cli="$CURRENT_LINK/codex"; fi
     if [ -n "$cf_old_cli" ] && [ "$CF_DAEMON_POLICY" != keep ] &&
       { [ -d "$CODEX_HOME_DIR/app-server-daemon" ] || [ -d "$CODEX_HOME_DIR/packages/app-server-daemon" ]; }; then
       # A failed version query alone does not distinguish an absent daemon.

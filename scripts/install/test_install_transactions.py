@@ -200,8 +200,8 @@ exec /bin/mv "$@"
             self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_daemon_migration_preserves_running_state_and_rolls_back_failure(self):
-        for fail in (False, True):
-            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as tmp:
+        for fail, managed_only in ((False, False), (True, False), (False, True), (True, True)):
+            with self.subTest(fail=fail, managed_only=managed_only), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp).resolve(); archive, sums, meta = self.package(root)
                 old, visible, current = self.old_install(root); before = old.read_bytes()
                 settings = root / 'codex-home/app-server-daemon/settings.json'
@@ -209,7 +209,8 @@ exec /bin/mv "$@"
                 legacy_log = settings.parent / 'app-server.stderr.log'; legacy_log.touch()
                 state = root / 'daemon-running'; state.touch()
                 (root / 'bin').mkdir()
-                old_cli = root / 'bin/codex'
+                old_cli = old if managed_only else root / 'bin/codex'
+                if managed_only: visible.unlink()
                 write_executable(old_cli, f"""#!/bin/sh
 case "$*" in
   --version) echo 'codex-cli 0.163.0' ;;
@@ -231,13 +232,17 @@ case "$*" in
 esac
 """)
                 repack_release(root, archive); meta = refresh_release_digests(archive, sums, meta)
-                result = self.run_install(root, (archive, sums, meta), arguments=('--stop-running',))
+                before = old.read_bytes()
+                restricted_path = str(root / 'bin') + ':/usr/bin:/bin:/usr/sbin:/sbin'
+                result = self.run_install(root, (archive, sums, meta), arguments=('--stop-running',),
+                                          extra_env={'PATH': restricted_path} if managed_only else None)
                 self.assertEqual(result.returncode == 0, not fail, result.stderr)
                 self.assertTrue(state.exists(), 'Originally running daemon was not restored')
                 self.assertEqual(settings.read_text(), '{"original":true}')
                 if fail:
                     self.assertEqual(old.read_bytes(), before)
-                    self.assertEqual(visible.resolve(), old.resolve())
+                    if managed_only: self.assertFalse(visible.exists())
+                    else: self.assertEqual(visible.resolve(), old.resolve())
                 else:
                     self.assertEqual(subprocess.check_output([str(visible), '--version'], text=True).strip(), f'codefx {VERSION}')
 
