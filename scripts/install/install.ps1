@@ -3,14 +3,19 @@ param(
     [string]$Release = $env:CODEX_RELEASE,
     [switch]$DryRun,
     [switch]$StopRunning,
+    [switch]$DeferUntilIdle,
     [switch]$KeepDaemon,
     [ValidateRange(1,300)][int]$ProcessTimeout = 30,
+    [ValidateRange(1,3600)][int]$IdleWaitTimeout = 900,
     [ValidateRange(1,600)][int]$LockTimeout = 120
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+if ($DeferUntilIdle -and $StopRunning) {
+    throw '-DeferUntilIdle and -StopRunning are mutually exclusive.'
+}
 
 if ([string]::IsNullOrWhiteSpace($Release)) {
     $Release = "latest"
@@ -1055,6 +1060,79 @@ function Get-CodefxProcesses {
     }
 }
 
+function Assert-CodefxOutsideActiveAncestor {
+    param([object[]]$Active)
+    if ($Active.Count -eq 0) { return }
+    $installerStarted = (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToUniversalTime()
+    # A process created after the installer host cannot be its ancestor.
+    $possibleAncestors = @($Active | Where-Object {
+        $null -eq $_.PSObject.Properties['CreationDate'] -or $null -eq $_.CreationDate -or
+            $_.CreationDate.ToUniversalTime() -le $installerStarted
+    })
+    if ($possibleAncestors.Count -eq 0) { return }
+    $ancestor = [long]$PID
+    $visited = New-Object 'System.Collections.Generic.HashSet[long]'
+    $ancestryWatch = [Diagnostics.Stopwatch]::StartNew()
+    while ($ancestor -gt 4) {
+        if (-not $visited.Add($ancestor) -or $visited.Count -gt 128 -or $ancestryWatch.Elapsed.TotalSeconds -ge $ProcessTimeout) {
+            throw "Cannot safely inspect process ancestry (cycle, reused PID, or timeout at PID $ancestor). Run from a fresh external terminal."
+        }
+        if ($possibleAncestors.ProcessId -contains $ancestor) {
+            throw 'Run the installer from an external terminal; its ancestor is Codex.'
+        }
+        $remaining = [uint32][Math]::Max(1, [Math]::Min(10, $ProcessTimeout - $ancestryWatch.Elapsed.TotalSeconds))
+        $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $ancestor" -OperationTimeoutSec $remaining -ErrorAction Stop
+        if ($null -eq $parent) { break }
+        $ancestor = [long]$parent.ParentProcessId
+    }
+}
+
+function Confirm-CodefxActivePreflight {
+    if (Test-CodefxGuardedUpdate) { return }
+    $active = @(Get-CodefxProcesses)
+    if ($active.Count -gt 0) {
+        Write-Host ($active | Select-Object ProcessId, ExecutablePath | Out-String)
+        Assert-CodefxOutsideActiveAncestor -Active $active
+        if ($DeferUntilIdle) {
+            Write-Step "Waiting up to $IdleWaitTimeout seconds for Codex to exit naturally."
+            $deadline = [DateTime]::UtcNow.AddSeconds($IdleWaitTimeout)
+            while ($active.Count -gt 0) {
+                if ([DateTime]::UtcNow -ge $deadline) {
+                    throw 'Codex is still running. Installation cancelled before downloading the package.'
+                }
+                Start-Sleep -Seconds 1
+                $active = @(Get-CodefxProcesses)
+            }
+            Write-Step 'Codex sessions are idle; continuing installation.'
+        } elseif (-not $StopRunning) {
+            if (Prompt-YesNo 'Attempt to close running Codex sessions and managed daemon to continue installation?') {
+                $script:StopRunning = $true
+            } else {
+                throw 'Codex was left running. Installation cancelled before downloading the package.'
+            }
+        }
+    }
+    if ($KeepDaemon -or -not (Test-CodefxDaemonInstalled)) { return }
+    $oldCli = Get-ExistingCodexCommand
+    if (-not $oldCli -and (Test-Path -LiteralPath (Join-Path $visibleBinDir 'codex.exe'))) {
+        $oldCli = Join-Path $visibleBinDir 'codex.exe'
+    }
+    foreach ($candidate in @((Join-Path $currentDir 'bin\codex.exe'), (Join-Path $currentDir 'codex.exe'))) {
+        if (-not $oldCli -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { $oldCli = $candidate }
+    }
+    if ($oldCli) {
+        $version = $null
+        try { $version = (Invoke-CodefxBounded $oldCli @('app-server','daemon','version')) | ConvertFrom-Json } catch {}
+        if ($null -ne $version -and $version.status -eq 'running' -and -not $StopRunning) {
+            if (Prompt-YesNo 'A managed app-server daemon is running. Stop and restart it during installation?') {
+                $script:StopRunning = $true
+            } else {
+                throw 'Managed daemon was left running. Installation cancelled before downloading the package.'
+            }
+        }
+    }
+}
+
 function Complete-CodefxReceipt {
     $receipt = '.rollback.' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + '.' + [guid]::NewGuid().ToString('N')
     Move-Item -LiteralPath $script:Cf.Root -Destination (Join-Path $standaloneRoot $receipt)
@@ -1174,29 +1252,14 @@ function Start-CodefxTransaction {
         $active = @(Get-CodefxProcesses)
         if ($active.Count -gt 0) {
             Write-Host ($active | Select-Object ProcessId, ExecutablePath | Out-String)
-            if (-not $StopRunning) { throw 'Codex is running. Close the listed sessions, or use -StopRunning from an external terminal.' }
-            $installerStarted = (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToUniversalTime()
-            # A process created after this PowerShell host cannot be its ancestor.
-            # This also avoids walking stale service-parent IDs for a new daemon.
-            $possibleAncestors = @($active | Where-Object {
-                $null -eq $_.PSObject.Properties['CreationDate'] -or $null -eq $_.CreationDate -or
-                    $_.CreationDate.ToUniversalTime() -le $installerStarted
-            })
-            if ($possibleAncestors.Count -gt 0) {
-                $ancestor = [long]$PID
-                $visited = New-Object 'System.Collections.Generic.HashSet[long]'
-                $ancestryWatch = [Diagnostics.Stopwatch]::StartNew()
-                while ($ancestor -gt 4) {
-                    if (-not $visited.Add($ancestor) -or $visited.Count -gt 128 -or $ancestryWatch.Elapsed.TotalSeconds -ge $ProcessTimeout) {
-                        throw "Cannot safely inspect process ancestry (cycle, reused PID, or timeout at PID $ancestor). Run from a fresh external terminal."
-                    }
-                    if ($possibleAncestors.ProcessId -contains $ancestor) { throw 'Run the installer from an external terminal; its ancestor is Codex.' }
-                    $remaining = [uint32][Math]::Max(1, [Math]::Min(10, $ProcessTimeout - $ancestryWatch.Elapsed.TotalSeconds))
-                    $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $ancestor" -OperationTimeoutSec $remaining -ErrorAction Stop
-                    if ($null -eq $parent) { break }
-                    $ancestor = [long]$parent.ParentProcessId
+            if (-not $StopRunning) {
+                if (Prompt-YesNo 'A Codex session started during download. Attempt to close it?') {
+                    $script:StopRunning = $true
+                } else {
+                    throw 'Codex was left running; existing installation preserved.'
                 }
             }
+            Assert-CodefxOutsideActiveAncestor -Active $active
         }
     }
     New-Item -ItemType Directory -Path $script:Cf.Root | Out-Null
@@ -1230,7 +1293,13 @@ function Start-CodefxTransaction {
             $version = $null
             try { $version = (Invoke-CodefxBounded $oldCli @('app-server','daemon','version')) | ConvertFrom-Json } catch {}
             if ($null -ne $version -and $version.status -eq 'running') {
-                if (-not $StopRunning) { throw 'A managed daemon is running. Close it, or use -StopRunning.' }
+                if (-not $StopRunning) {
+                    if (Prompt-YesNo 'A managed daemon started during download. Stop and restart it?') {
+                        $script:StopRunning = $true
+                    } else {
+                        throw 'Managed daemon was left running; existing installation preserved.'
+                    }
+                }
                 $script:Cf.RestartCli = $oldCli
                 Save-CodefxJournal
                 $null = Invoke-CodefxBounded $oldCli @('app-server','daemon','stop')
@@ -1487,8 +1556,12 @@ $script:Cf = @{
     StagePath = $null; ReleaseBackup = $null; ReleasePath = $releaseDir; VisibleBackup = $null; RestartCli = $null; MigrationAttempted = $false
     UserPath = [Environment]::GetEnvironmentVariable('Path', 'User'); ProcessPath = $env:Path
 }
-Write-Step 'Existing codex commands (all PATH entries):'
-Get-Command codex -All -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "    $($_.Source)" }
+Write-Step 'Existing codex commands (deduplicated PATH entries):'
+$seenCommands = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+Get-Command codex -All -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object {
+    $canonical = [IO.Path]::GetFullPath($_.Source)
+    if ($seenCommands.Add($canonical)) { Write-Host "    $($_.Source)" }
+}
 if ($DryRun) {
     Write-Step "Dry run: release $resolvedVersion, target $target, destination $visibleBinDir. No changes made."
     return
@@ -1568,6 +1641,7 @@ try {
                 return
             }
         }
+        Confirm-CodefxActivePreflight
         Remove-StaleInstallArtifacts -ReleasesDir $releasesDir
 
         if (-not (Test-ReleaseIsComplete -ReleaseDir $releaseDir -ExpectedVersion $resolvedVersion -ExpectedTarget $target -Layout $installLayout)) {
