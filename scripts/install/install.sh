@@ -657,7 +657,7 @@ append_path_block() {
   end_marker="$3"
   path_line="$4"
 
-  tmp_profile="$(dirname "$profile")/.codefx-profile.$$"
+  tmp_profile="$(mktemp "$(dirname "$profile")/.codefx-profile.XXXXXX")"
   if [ -f "$profile" ]; then cp -p "$profile" "$tmp_profile"; else : > "$tmp_profile"; fi
   {
     printf '\n%s\n' "$begin_marker"
@@ -672,7 +672,7 @@ rewrite_path_block() {
   begin_marker="$2"
   end_marker="$3"
   path_line="$4"
-  tmp_profile="$(dirname "$profile")/.codefx-profile.$$"
+  tmp_profile="$(mktemp "$(dirname "$profile")/.codefx-profile.XXXXXX")"
   cp -p "$profile" "$tmp_profile"
 
   awk -v begin="$begin_marker" -v end="$end_marker" -v line="$path_line" '
