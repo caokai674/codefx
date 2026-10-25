@@ -78,6 +78,7 @@ class Transactions(unittest.TestCase):
                 self.assertEqual(old.read_bytes(), before)
                 self.assertEqual(visible.resolve(), old)
                 self.assertFalse((root / 'escape').exists())
+                self.assertFalse(list(current.parent.joinpath("releases").glob(".staging.*")))
 
     def test_entrypoint_failure_restores_same_version_bytes_and_profile(self):
         with tempfile.TemporaryDirectory() as tmp:

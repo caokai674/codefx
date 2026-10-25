@@ -38,7 +38,32 @@ else
   esac
   if [ "${#installer_sha}" -ne 40 ]; then
     fetch "https://api.github.com/repos/$CODEFX_GITHUB_REPO/commits/$CODEFX_INSTALL_REF" "$tmp_dir/commit.json"
-    installer_sha=$(tr '{},' '\n' < "$tmp_dir/commit.json" | sed -n 's/^[[:space:]]*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p' | head -n 1)
+    installer_sha=$(awk '
+      BEGIN { depth=0; quoted=0; escaped=0; value=0; found=0 }
+      {
+        for (i=1; i<=length($0); i++) {
+          c=substr($0,i,1)
+          if (quoted) {
+            if (escaped) { escaped=0; token=token c; continue }
+            if (c=="\\") { escaped=1; continue }
+            if (c=="\"") {
+              quoted=0
+              if (depth==1) {
+                if (value && key=="sha" && length(token)==40 && token !~ /[^0-9a-f]/) {
+                  print token; found=1; exit
+                }
+                if (!value) key=token
+              }
+            } else token=token c
+          } else if (c=="\"") { quoted=1; token="" }
+          else if (c=="{" || c=="[") depth++
+          else if (c=="}" || c=="]") depth--
+          else if (depth==1 && c==":") value=1
+          else if (depth==1 && c==",") { value=0; key="" }
+        }
+      }
+      END { if (!found) exit 1 }
+    ' "$tmp_dir/commit.json") || { echo 'Cannot resolve installer commit from GitHub response.' >&2; exit 1; }
   fi
   [ "${#installer_sha}" -eq 40 ] || { echo 'Cannot resolve installer commit.' >&2; exit 1; }
   installer_url="https://raw.githubusercontent.com/$CODEFX_GITHUB_REPO/$installer_sha/scripts/install/install.sh"

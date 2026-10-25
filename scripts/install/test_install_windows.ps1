@@ -75,7 +75,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
     function bun { $fixture.ManagerCalls++; throw 'Unexpected package-manager mutation.' }
     function vp { $fixture.ManagerCalls++; throw 'Unexpected package-manager mutation.' }
 
-    foreach ($case in @('success','checksum','target','active','dry-run','visible','daemon','repeat','guarded','daemon-running','active-timeout','committed-recovery','interrupted-recovery','cache-rollback')) {
+    foreach ($case in @('success','checksum','target','active','dry-run','visible','daemon','repeat','guarded','daemon-running','active-timeout','committed-recovery','interrupted-recovery','cache-rollback','flat-native','flat-rollback','empty-native','empty-rollback','unknown-native')) {
         Write-Host "Native Windows case: $case"
         $caseRoot = Join-Path $root $case
         $package = Join-Path $caseRoot 'package'
@@ -100,18 +100,25 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
         $env:CODEX_INSTALL_DIR = Join-Path $caseRoot 'visible bin'
         $env:CODEX_NON_INTERACTIVE = '1'
         $env:CODEFX_FIXTURE_COUNTER = Join-Path $caseRoot 'counter'
-        $env:CODEFX_FIXTURE_FAIL = $case
+        $env:CODEFX_FIXTURE_FAIL = if ($case -in @('flat-rollback','empty-rollback')) { 'visible' } else { $case }
         $standalone = Join-Path $env:CODEX_HOME 'packages\standalone'
         $release = Join-Path $standalone "releases\0.164.0-$target"
         New-Item -ItemType Directory -Force -Path (Join-Path $release 'bin') | Out-Null
         Copy-Item -LiteralPath (Join-Path $root 'old.exe') -Destination (Join-Path $release 'bin\codex.exe')
         New-Item -ItemType Junction -Path (Join-Path $standalone 'current') -Target $release | Out-Null
-        New-Item -ItemType Junction -Path $env:CODEX_INSTALL_DIR -Target (Join-Path $standalone 'current\bin') | Out-Null
+        if ($case -in @('flat-native','flat-rollback','unknown-native','empty-native','empty-rollback')) {
+            New-Item -ItemType Directory -Path $env:CODEX_INSTALL_DIR | Out-Null
+            if ($case -notin @('empty-native','empty-rollback')) {
+                Copy-Item -LiteralPath (Join-Path $root 'old.exe') -Destination (Join-Path $env:CODEX_INSTALL_DIR 'codex.exe')
+                Copy-Item -LiteralPath (Join-Path $root 'old.exe') -Destination (Join-Path $env:CODEX_INSTALL_DIR 'rg.exe')
+            }
+            if ($case -eq 'unknown-native') { 'preserve this file' | Set-Content -LiteralPath (Join-Path $env:CODEX_INSTALL_DIR 'keep.txt') }
+        } else { New-Item -ItemType Junction -Path $env:CODEX_INSTALL_DIR -Target (Join-Path $standalone 'current\bin') | Out-Null }
         $oldHash = (Get-FileHash (Join-Path $release 'bin\codex.exe')).Hash
         $cache = Join-Path $env:CODEX_HOME 'version.json'
         $oldCache = '{"latest_version":"999.0.0","dismissed_version":"999.0.0"}'
         [IO.File]::WriteAllText($cache, $oldCache)
-        if ($case -in @('daemon','daemon-running','active-timeout','committed-recovery','interrupted-recovery','cache-rollback')) {
+        if ($case -in @('daemon','daemon-running','active-timeout','committed-recovery','interrupted-recovery','cache-rollback','flat-native','flat-rollback','empty-native','empty-rollback','unknown-native')) {
             New-Item -ItemType Directory -Force -Path (Join-Path $env:CODEX_HOME 'app-server-daemon') | Out-Null
             '{}' | Set-Content -LiteralPath (Join-Path $env:CODEX_HOME 'app-server-daemon\settings.json')
         }
@@ -135,11 +142,15 @@ exit /b 1
             elseif ($case -eq 'dry-run') { & $base -Release '0.164.0' -DryRun }
             else { & $base -Release '0.164.0' -ProcessTimeout 3 }
         } catch { $failed = $true; Write-Host "Expected failure if negative case: $_" }
-        $negative = $case -in @('checksum','target','active','active-timeout','visible','daemon','cache-rollback')
+        $negative = $case -in @('checksum','target','active','active-timeout','visible','daemon','cache-rollback','flat-rollback','empty-rollback','unknown-native')
         if ($failed -ne $negative) { throw "Unexpected installer result for $case (failed=$failed)." }
         if ($negative -or $case -eq 'dry-run') {
             if ([IO.File]::ReadAllText($cache) -cne $oldCache) { throw "Original version cache was not restored for $case." }
-            if ((Get-FileHash (Join-Path $env:CODEX_INSTALL_DIR 'codex.exe')).Hash -ne $oldHash) { throw "Original installation was not restored for $case." }
+            if ($case -eq 'empty-rollback') {
+                $emptyItem = Get-Item -LiteralPath $env:CODEX_INSTALL_DIR
+                if (($emptyItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or @(Get-ChildItem -LiteralPath $env:CODEX_INSTALL_DIR -Force).Count -ne 0) { throw 'Original empty directory was not restored.' }
+            } elseif ((Get-FileHash (Join-Path $env:CODEX_INSTALL_DIR 'codex.exe')).Hash -ne $oldHash) { throw "Original installation was not restored for $case." }
+            if ($case -eq 'unknown-native' -and (Get-Content -LiteralPath (Join-Path $env:CODEX_INSTALL_DIR 'keep.txt')) -ne 'preserve this file') { throw 'Unknown directory contents changed.' }
         } else {
             if (Test-Path -LiteralPath $cache) { throw "Official version cache was retained for $case." }
             $output = & (Join-Path $env:CODEX_INSTALL_DIR 'codex.exe') --version
@@ -149,7 +160,7 @@ exit /b 1
                 & $base -Release '0.164.0' -ProcessTimeout 3
                 if ([IO.File]::ReadAllText($cache) -cne '{"dismissed_version":"0.165.0"}') { throw 'Same-source update lost version dismissals.' }
             }
-            if ($case -in @('committed-recovery','interrupted-recovery','cache-rollback')) {
+            if ($case -in @('committed-recovery','interrupted-recovery','cache-rollback','flat-native','flat-rollback','empty-native','empty-rollback','unknown-native')) {
                 $receipt = Get-ChildItem -LiteralPath $standalone -Directory -Force -Filter '.rollback.*' | Select-Object -First 1
                 $journal = Join-Path $receipt.FullName 'journal.json'
                 if ($case -eq 'interrupted-recovery') {
@@ -175,6 +186,7 @@ exit /b 1
             }
         }
         if ($case -eq 'daemon-running' -and -not (Test-Path -LiteralPath ($env:CODEFX_FIXTURE_COUNTER + '.daemon'))) { throw 'Running daemon state was not restored.' }
+        if (@(Get-ChildItem -LiteralPath (Join-Path $standalone 'releases') -Directory -Force -Filter '.staging.*').Count -gt 0) { throw "Unfinished staging files for $case." }
         if (Test-Path -LiteralPath (Join-Path $standalone '.transaction')) { throw "Unfinished transaction for $case." }
         $env:Path = $savedEnv.Path
     }

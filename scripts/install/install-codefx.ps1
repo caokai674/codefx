@@ -47,7 +47,11 @@ try {
     if ($env:CODEX_INSTALL_DAEMON_ONLY -ne '1' -and $args -notcontains '-DryRun') {
         $bin = if ($env:CODEX_INSTALL_DIR) { $env:CODEX_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\OpenAI\Codex\bin' }
         $env:Path = (@($bin) + @($env:Path.Split(';') | Where-Object { $_ -and $_.TrimEnd('\') -ine $bin.TrimEnd('\') })) -join ';'
-        Write-Host "Codefx command available in this PowerShell session: $bin\codex.exe"
+        $selected = Get-Command codex -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $selected -and ($selected.CommandType -ne 'Application' -or -not $selected.Source.Equals((Join-Path $bin 'codex.exe'), [StringComparison]::OrdinalIgnoreCase))) {
+            Write-Warning "This PowerShell session resolves codex to $($selected.CommandType) $($selected.Name). Use $bin\codex.exe or adjust the existing alias, function or command cache."
+        }
+        Write-Host "Codefx executable: $bin\codex.exe"
     }
 } finally {
     foreach ($key in $previousEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $previousEnvironment[$key], 'Process') }

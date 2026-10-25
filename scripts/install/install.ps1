@@ -289,6 +289,21 @@ function Path-Contains {
     return $false
 }
 
+function Find-CodefxCommandOnPath {
+    param([string]$PathValue)
+    if ([string]::IsNullOrWhiteSpace($PathValue)) { return $null }
+    foreach ($entry in $PathValue.Split(';', [StringSplitOptions]::RemoveEmptyEntries)) {
+        $directory = [Environment]::ExpandEnvironmentVariables($entry.Trim().Trim('"'))
+        if ($directory -notmatch '^[A-Za-z]:[\\/]') { continue }
+        try { if ([IO.DriveInfo]::new([IO.Path]::GetPathRoot($directory)).DriveType -eq [IO.DriveType]::Network) { continue } } catch { continue }
+        foreach ($extension in @('.ps1','.exe','.cmd','.bat','.com')) {
+            $candidate = Join-Path $directory ("codex" + $extension)
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+        }
+    }
+    return $null
+}
+
 function Prepend-PathEntry {
     param(
         [string]$PathValue,
@@ -342,7 +357,18 @@ function Invoke-WithInstallLock {
         }
         throw
     } finally {
-        $lock.Dispose()
+        try {
+            if ($script:Cf.StagePath -and (Split-Path -Leaf $script:Cf.StagePath).EndsWith(".$PID") -and
+                [IO.Path]::GetFullPath((Split-Path -Parent $script:Cf.StagePath)).Equals([IO.Path]::GetFullPath($releasesDir), [StringComparison]::OrdinalIgnoreCase)) {
+                $stageItem = Get-Item -LiteralPath $script:Cf.StagePath -Force -ErrorAction SilentlyContinue
+                if ($null -ne $stageItem) {
+                    if ($stageItem.PSIsContainer -and ($stageItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                        [IO.Directory]::Delete($script:Cf.StagePath)
+                    } else { Remove-Item -LiteralPath $script:Cf.StagePath -Recurse -Force -ErrorAction SilentlyContinue }
+                }
+            }
+        } catch { Write-WarningStep 'Could not remove temporary staging files.' }
+        finally { $lock.Dispose() }
     }
 }
 
@@ -497,9 +523,6 @@ function Test-OldStandaloneBinLayout {
         [string]$DefaultVisibleBinDir
     )
 
-    if (-not $VisibleBinDir.Equals($DefaultVisibleBinDir, [System.StringComparison]::OrdinalIgnoreCase)) {
-        return $false
-    }
     if (-not (Test-Path -LiteralPath $VisibleBinDir -PathType Container)) {
         return $false
     }
@@ -516,7 +539,12 @@ function Test-OldStandaloneBinLayout {
         }
     }
 
+    try {
+        $identity = (Invoke-CodefxBounded (Join-Path $VisibleBinDir 'codex.exe') @('--version')).Trim()
+        if ($identity -cnotmatch '^(codefx|codex-cli) [0-9][0-9A-Za-z.+-]*$') { return $false }
+    } catch { return $false }
     $knownFiles = @(
+        "codex-code-mode-host.exe",
         "codex.exe",
         "rg.exe",
         "codex-command-runner.exe",
@@ -545,14 +573,10 @@ function Move-OldStandaloneBinIfApproved {
         return $null
     }
 
-    Write-Step "We found an older Codex install at $VisibleBinDir"
-    Write-WarningStep "To continue, Codex needs to update the install at this path."
-    if (-not (Prompt-YesNo "Replace it with the current Codex setup now?")) {
-        throw "Cannot replace older standalone install without confirmation: $VisibleBinDir"
-    }
-
-    $backupDir = "$VisibleBinDir.backup.$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()).$PID"
-    Write-Step "Moving older standalone install to $backupDir"
+    $backupDir = "$VisibleBinDir.backup.$([guid]::NewGuid().ToString('N'))"
+    Write-Step "Preserving the verified older standalone install at $backupDir"
+    $script:Cf.VisibleBackup = $backupDir
+    Save-CodefxJournal
     Move-Item -LiteralPath $VisibleBinDir -Destination $backupDir
     return $backupDir
 }
@@ -1043,7 +1067,7 @@ function Save-CodefxPath {
         } elseif ($item.PSIsContainer) {
             if ($Key -ne 'visible') { throw "Unexpected directory at $Path." }
             # Move-OldStandaloneBinIfApproved validates this layout before moving it.
-            $record.Kind = 'directory'
+            $record.Kind = if (@(Get-ChildItem -LiteralPath $Path -Force).Count -eq 0) { 'empty-directory' } else { 'directory' }
         } else {
             $record.Kind = 'file'
             $record.Backup = Join-Path $script:Cf.Root "$Key.file"
@@ -1092,6 +1116,7 @@ function Start-CodefxTransaction {
     }
     if (-not (Test-CodefxGuardedUpdate)) {
         $oldCli = Get-ExistingCodexCommand
+        if (-not $oldCli -and (Test-Path -LiteralPath (Join-Path $visibleBinDir 'codex.exe'))) { $oldCli = Join-Path $visibleBinDir 'codex.exe' }
         if ($oldCli -and -not $KeepDaemon -and
             ((Test-Path -LiteralPath (Join-Path $codexHome 'app-server-daemon')) -or
              (Test-Path -LiteralPath (Join-Path $codexHome 'packages\app-server-daemon')))) {
@@ -1151,10 +1176,14 @@ function Undo-CodefxTransaction {
         if ($null -ne $item) {
             if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
                 [IO.Directory]::Delete($record.Path)
-            } elseif ($item.PSIsContainer) { throw "Rollback preserved unexpected directory $($record.Path)." }
+            } elseif ($item.PSIsContainer) {
+                if ($record.Kind -eq 'empty-directory' -and @(Get-ChildItem -LiteralPath $record.Path -Force).Count -eq 0) { continue }
+                throw "Rollback preserved unexpected directory $($record.Path)."
+            }
             else { Remove-Item -LiteralPath $record.Path -Force }
         }
         switch ($record.Kind) {
+            'empty-directory' { New-Item -ItemType Directory -Path $record.Path | Out-Null }
             'junction' { New-Item -ItemType Junction -Path $record.Path -Target $record.Backup | Out-Null }
             'file' { Copy-Item -LiteralPath $record.Backup -Destination $record.Path }
         }
@@ -1313,6 +1342,11 @@ if ([string]::IsNullOrWhiteSpace($env:CODEX_INSTALL_DIR)) {
 foreach ($path in @($codexHome, $visibleBinDir)) {
     if ($path -notmatch '^[A-Za-z]:[\\/]') { throw 'CODEX_HOME and CODEX_INSTALL_DIR must use absolute paths on local Windows drives.' }
 }
+$canonicalVisible = [IO.Path]::GetFullPath($visibleBinDir).TrimEnd('\') + '\'
+$canonicalRoot = [IO.Path]::GetFullPath($standaloneRoot).TrimEnd('\') + '\'
+if ($canonicalVisible.StartsWith($canonicalRoot, [StringComparison]::OrdinalIgnoreCase) -or $canonicalRoot.StartsWith($canonicalVisible, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'CODEX_INSTALL_DIR must be a separate directory outside the managed package tree.'
+}
 $currentVersion = Get-CurrentInstalledVersion -StandaloneCurrentDir $currentDir
 $resolvedRelease = Resolve-Release
 $resolvedVersion = $resolvedRelease.Version
@@ -1343,7 +1377,7 @@ $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-install-" + [Syst
 $guardRejected = $false
 $script:Cf = @{
     Root = (Join-Path $standaloneRoot '.transaction'); Prepared = $false; Committed = $false; Paths = @();
-    ReleaseBackup = $null; ReleasePath = $releaseDir; VisibleBackup = $null; RestartCli = $null; MigrationAttempted = $false
+    StagePath = $null; ReleaseBackup = $null; ReleasePath = $releaseDir; VisibleBackup = $null; RestartCli = $null; MigrationAttempted = $false
     UserPath = [Environment]::GetEnvironmentVariable('Path', 'User'); ProcessPath = $env:Path
 }
 Write-Step 'Existing codex commands (all PATH entries):'
@@ -1438,6 +1472,7 @@ try {
             $archivePath = Join-Path $tempDir $packageAsset
             $checksumPath = Join-Path $tempDir $checksumAsset
             $stagingDir = Join-Path $releasesDir ".staging.$releaseName.$PID"
+            $script:Cf.StagePath = $stagingDir
 
             Write-Step "Downloading Codefx CLI"
             if ($installLayout -eq "Package") {
@@ -1608,7 +1643,10 @@ if ($prioritizeVisibleBin) {
 }
 
 Write-Step "Current PowerShell session: codex"
-Write-Step "Future PowerShell windows: open a new PowerShell window and run: codex"
+$machineCommand = Find-CodefxCommandOnPath ([Environment]::GetEnvironmentVariable('Path', 'Machine'))
+if ($machineCommand -and -not (Split-Path -Parent $machineCommand).TrimEnd('\').Equals($visibleBinDir.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+    Write-WarningStep "System PATH contains $machineCommand before the user PATH. New terminals may select it. Use $visibleBinDir\codex.exe, or remove the older system command through its original package manager."
+} else { Write-Step "New PowerShell windows: check Get-Command codex -All; expected $visibleBinDir\codex.exe" }
 Write-Host "Codefx CLI $resolvedVersion installed successfully."
 
         Test-VisibleCodexCommand -VisibleBinDir $visibleBinDir

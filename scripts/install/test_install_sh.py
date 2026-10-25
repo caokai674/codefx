@@ -71,6 +71,7 @@ class InstallShTest(unittest.TestCase):
             self.assertEqual(subprocess.check_output([str(visible), "--version"], text=True).strip(), f"codefx {VERSION}")
             self.assertFalse(list(root.glob("codefx-install.*")))
             self.assertEqual(len(requests), 5)
+            self.assertIn("/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/scripts/install/install.sh", requests[1])
 
     def test_same_version_standalone_survives_invalid_staged_binary(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1061,7 +1062,7 @@ def run_installer_in(
                 cp "$CODEFX_TEST_BASE_INSTALLER" "$output"
                 ;;
               https://api.github.com/repos/hitmux/codefx/commits/main)
-                printf '  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n' > "$output"
+                printf '{"commit":{"tree":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},"parents":[{"sha":"cccccccccccccccccccccccccccccccccccccccc"}],"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\n' > "$output"
                 ;;
               https://api.github.com/*)
                 if [ "$CODEX_TEST_METADATA_FAILURE" = "1" ]; then

@@ -1421,6 +1421,7 @@ cf_prepare() {
   fi
   if ! cf_guarded; then
     cf_old_cli=$(resolve_existing_codex)
+    if [ -z "$cf_old_cli" ] && [ -x "$BIN_PATH" ]; then cf_old_cli=$BIN_PATH; fi
     if [ -n "$cf_old_cli" ] && [ "$CF_DAEMON_POLICY" != keep ] &&
       { [ -d "$CODEX_HOME_DIR/app-server-daemon" ] || [ -d "$CODEX_HOME_DIR/packages/app-server-daemon" ]; }; then
       # A failed version query alone does not distinguish an absent daemon.
@@ -1593,6 +1594,7 @@ case "$CF_DAEMON_POLICY" in auto|keep) ;; *) echo 'Invalid daemon policy.' >&2; 
 case "$CODEX_HOME_DIR" in /*) ;; *) echo 'CODEX_HOME must be absolute.' >&2; exit 2 ;; esac
 case "$CODEX_HOME_DIR$HOME" in *'
 '*) echo 'Home paths must not contain newlines.' >&2; exit 2 ;; esac
+case "$BIN_DIR" in "$STANDALONE_ROOT"|"$STANDALONE_ROOT"/*) echo 'CODEX_INSTALL_DIR must be outside the managed package tree.' >&2; exit 2 ;; esac
 case "$BIN_DIR" in /*) ;; *) echo 'CODEX_INSTALL_DIR must be absolute.' >&2; exit 2 ;; esac
 case "$BIN_DIR" in *':'*|*'"'*|*'$'*|*'`'*|*'\'*|*'
 '*) echo 'Install path contains unsupported shell metacharacters.' >&2; exit 2 ;; esac
@@ -1692,6 +1694,9 @@ cleanup() {
       warn "Rollback needs attention; recovery files retained at $cf_tx"
       cf_exit=1
     fi
+  fi
+  if [ -n "${stage_release:-}" ]; then
+    case "$stage_release" in "$RELEASES_DIR"/.staging.*."$$") rm -rf "$stage_release" ;; esac
   fi
   release_install_lock
   if [ -n "${tmp_profile:-}" ]; then rm -f "$tmp_profile"; fi
