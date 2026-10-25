@@ -164,37 +164,35 @@ download_file() {
   exit 1
 }
 
-download_text() {
+download_text() (
   url="$1"
   case "$url" in https://*) ;; *) echo 'Downloads require HTTPS.' >&2; return 1 ;; esac
-
+  auth_dir=""
+  trap '[ -z "$auth_dir" ] || rm -rf "$auth_dir"' EXIT
+  case "$url" in
+    "https://api.github.com/repos/$CODEFX_GITHUB_REPO/"*)
+      if [ -n "${CODEFX_GITHUB_TOKEN:-}" ]; then
+        case "$CODEFX_GITHUB_TOKEN" in *[!A-Za-z0-9._~+/=-]*) echo 'Invalid CODEFX_GITHUB_TOKEN.' >&2; return 1 ;; esac
+        auth_dir=$(mktemp -d)
+        printf 'header = "Authorization: Bearer %s"\n' "$CODEFX_GITHUB_TOKEN" > "$auth_dir/curl.conf"
+        printf 'header = Authorization: Bearer %s\n' "$CODEFX_GITHUB_TOKEN" > "$auth_dir/wgetrc"
+      fi
+      ;;
+  esac
   if command -v curl >/dev/null 2>&1; then
-    case "$url" in
-      "$RELEASES_BASE_URL"/*)
-        curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout "$RELEASES_CONNECT_TIMEOUT" --max-time "$RELEASES_METADATA_TIMEOUT" "$url"
-        ;;
-      *)
-        curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 10 --max-time "$RELEASES_METADATA_TIMEOUT" "$url"
-        ;;
-    esac
-    return
+    set -- -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout "$RELEASES_CONNECT_TIMEOUT" --max-time "$RELEASES_METADATA_TIMEOUT"
+    if [ -n "$auth_dir" ]; then set -- "$@" --config "$auth_dir/curl.conf"; fi
+    curl "$@" "$url"
+  elif command -v wget >/dev/null 2>&1; then
+    if [ -n "$auth_dir" ]; then
+      WGETRC="$auth_dir/wgetrc" wget -q --https-only -t 3 -T "$RELEASES_METADATA_TIMEOUT" -O - "$url"
+    else
+      wget -q --https-only -t 3 -T "$RELEASES_METADATA_TIMEOUT" -O - "$url"
+    fi
+  else
+    echo 'curl or wget is required to install Codefx.' >&2; return 1
   fi
-
-  if command -v wget >/dev/null 2>&1; then
-    case "$url" in
-      "$RELEASES_BASE_URL"/*)
-        wget -q --https-only -t 1 -T "$RELEASES_METADATA_TIMEOUT" -O - "$url"
-        ;;
-      *)
-        wget -q --https-only -t 3 -T "$RELEASES_METADATA_TIMEOUT" -O - "$url"
-        ;;
-    esac
-    return
-  fi
-
-  echo "curl or wget is required to install Codex." >&2
-  exit 1
-}
+)
 
 download_file_with_fallback() {
   primary_url="$1"
@@ -1275,7 +1273,7 @@ cf_guarded() {
 
 cf_run() (
   # Portable bounded execution; no dependency on GNU timeout on macOS.
-  "$@" 9>&- & cf_child=$!
+  ( unset CODEFX_GITHUB_TOKEN; exec "$@" ) 9>&- & cf_child=$!
   ( trap '[ -z "${cf_sleep:-}" ] || kill "$cf_sleep" 2>/dev/null; exit 0' TERM INT
     sleep "$CF_TIMEOUT" & cf_sleep=$!
     wait "$cf_sleep"; kill -TERM "$cf_child" 2>/dev/null || exit 0
@@ -1540,8 +1538,12 @@ cf_migrate_update_cache() {
 cf_migrate_daemon() {
   cf_guarded && return 0
   [ "$CF_DAEMON_POLICY" != keep ] || return 0
-  if [ -f "$CODEX_HOME_DIR/app-server-daemon/settings.json" ] ||
-    [ -e "$CODEX_HOME_DIR/packages/app-server-daemon/current" ] || [ -f "$cf_tx/restart-cli" ]; then
+  if [ -e "$CODEX_HOME_DIR/packages/app-server-daemon/current" ] ||
+    [ -L "$CODEX_HOME_DIR/packages/app-server-daemon/current" ] || [ -f "$cf_tx/restart-cli" ] ||
+    [ -f "$CODEX_HOME_DIR/app-server-daemon/app-server.pid" ] ||
+    [ -f "$CODEX_HOME_DIR/app-server-daemon/app-server.stderr.log" ] ||
+    [ -f "$CODEX_HOME_DIR/app-server-daemon/app-server-updater.pid" ] ||
+    [ -f "$CODEX_HOME_DIR/app-server-daemon/app-server-updater.stderr.log" ]; then
     : > "$cf_tx/migration-attempted"
     step 'Migrating the managed app-server daemon to the verified Codefx package'
     cf_run "$BIN_PATH" app-server daemon update --from-cli --yes || return 1

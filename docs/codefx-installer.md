@@ -2,7 +2,7 @@
 
 安装脚本在 Linux、macOS 和 Windows 上提供同一套安全切换流程，支持各系统的 x86_64 和 ARM64 架构。Linux 使用 musl 安装包；macOS 自动识别 Apple Silicon，包括 Rosetta 终端；Windows 使用原生 PowerShell 脚本。
 
-安装包是否可用，以对应 Release 的附件和 `codex-package_SHA256SUMS` 为准。缺少本机安装包或校验记录时，安装会退出并保留原版本。32 位系统不受支持。
+安装包是否可用，以对应 Release 的附件和本平台 `.sha256` 文件（或旧版 `codex-package_SHA256SUMS`）为准。缺少本机安装包或校验记录时，安装会退出并保留原版本。32 位系统不受支持。
 
 ## 入口
 
@@ -10,7 +10,7 @@
 - Windows：[`scripts/install/install-codefx.ps1`](../scripts/install/install-codefx.ps1)
 - 基础安装器：[`install.sh`](../scripts/install/install.sh)、[`install.ps1`](../scripts/install/install.ps1)
 
-入口脚本会把安装器源码引用解析为固定的 Git 提交，再下载和运行该提交的基础安装器。下载要求 HTTPS，有重试和超时。可以使用 `CODEFX_INSTALL_REF` 固定审核过的提交。
+入口脚本会把安装器源码引用解析为固定的 Git 提交，再下载和运行该提交的基础安装器。下载要求 HTTPS，有重试和超时。可以使用 `CODEFX_INSTALL_REF` 固定审核过的提交。遇到 GitHub API 限流时，可通过环境变量 `CODEFX_GITHUB_TOKEN` 提供只读令牌；安装器只对本仓库的 API 元数据请求附加认证，不把令牌写入安装配置，也不传给启动的 Codefx 或 daemon。
 
 ## 参数
 
@@ -67,7 +67,7 @@ codex --version
 
 ## 独立 app-server daemon
 
-发现已经配置的独立 daemon 时，默认使用新 CLI 的 `app-server daemon update --from-cli --yes` 迁移其包。原先运行中的 daemon 需要显式允许停止；迁移后恢复运行并校验版本。原先停止的 daemon 在迁移后保持停止。
+发现已经配置的独立 daemon 时，默认使用新 CLI 的 `app-server daemon update --from-cli --yes` 迁移其包。原先运行中的 daemon 需要显式允许停止；迁移后恢复运行并校验版本。原先停止的 daemon 在迁移后保持停止。`--from-cli` 会将独立 daemon 固定到这份已验证的 CLI 包，不会自动跟随后续版本；要重新启用 Codefx 正式版更新，需运行 `codex app-server daemon update`。CLI 自身的更新检查仍指向 Codefx。
 
 `--keep-daemon` / `-KeepDaemon` 用于保留其独立包与更新设置；使用该选项时应先自行关闭运行中的 Codex 进程。保留的旧官方 daemon 也会保留原有更新来源。
 

@@ -400,6 +400,12 @@ function Resolve-VersionFromReleaseMetadata {
     return $resolvedVersion
 }
 
+function Get-CodefxApiHeaders {
+    $headers = @{}
+    if ($env:CODEFX_GITHUB_TOKEN) { $headers.Authorization = "Bearer $env:CODEFX_GITHUB_TOKEN" }
+    return $headers
+}
+
 function Resolve-ReleaseFromGitHub {
     param(
         [string]$NormalizedVersion
@@ -415,7 +421,7 @@ function Resolve-ReleaseFromGitHub {
     }
 
     try {
-        $releaseMetadata = Invoke-RestMethod -Uri $metadataUri -TimeoutSec $ReleasesMetadataTimeoutSec
+        $releaseMetadata = Invoke-RestMethod -Uri $metadataUri -Headers (Get-CodefxApiHeaders) -TimeoutSec $ReleasesMetadataTimeoutSec
     } catch {
         throw "Could not fetch GitHub release metadata for Codex $requestedRelease. GitHub API may be unavailable or rate limited. $($_.Exception.Message)"
     }
@@ -1010,6 +1016,7 @@ function Invoke-CodefxBounded {
         $start.Arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($expression))
     }
     $start.UseShellExecute = $false
+    $start.EnvironmentVariables.Remove('CODEFX_GITHUB_TOKEN')
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
@@ -1220,8 +1227,9 @@ function Update-CodefxVersionCache {
 
 function Update-CodefxDaemon {
     if ((Test-CodefxGuardedUpdate) -or $KeepDaemon) { return }
-    if ((Test-Path -LiteralPath (Join-Path $codexHome 'app-server-daemon\settings.json')) -or
-        (Test-Path -LiteralPath (Join-Path $codexHome 'packages\app-server-daemon\current')) -or $script:Cf.RestartCli) {
+    $legacyEvidence = @('app-server.pid','app-server.stderr.log','app-server-updater.pid','app-server-updater.stderr.log') |
+        Where-Object { Test-Path -LiteralPath (Join-Path $codexHome "app-server-daemon\$_") }
+    if ((Test-Path -LiteralPath (Join-Path $codexHome 'packages\app-server-daemon\current')) -or $script:Cf.RestartCli -or @($legacyEvidence).Count -gt 0) {
         $newCli = Join-Path $visibleBinDir 'codex.exe'
         $script:Cf.MigrationAttempted = $true
         Save-CodefxJournal

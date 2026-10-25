@@ -11,7 +11,11 @@ function Get-CodefxBootstrapFile {
     if (-not $Uri.StartsWith('https://', [StringComparison]::OrdinalIgnoreCase)) { throw 'Installer downloads require HTTPS.' }
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         try {
-            Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile "$OutFile.part" -TimeoutSec 120
+            $request = @{ UseBasicParsing=$true; Uri=$Uri; OutFile="$OutFile.part"; TimeoutSec=120 }
+            if ($Uri.StartsWith("https://api.github.com/repos/$repo/", [StringComparison]::OrdinalIgnoreCase) -and $env:CODEFX_GITHUB_TOKEN) {
+                $request.Headers = @{ Authorization="Bearer $env:CODEFX_GITHUB_TOKEN" }
+            }
+            Invoke-WebRequest @request
             Move-Item -LiteralPath "$OutFile.part" -Destination $OutFile -Force
             return
         } catch { if ($attempt -eq 3) { throw }; Start-Sleep -Seconds $attempt }

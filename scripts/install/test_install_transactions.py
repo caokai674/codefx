@@ -204,6 +204,7 @@ exec /bin/mv "$@"
                 old, visible, current = self.old_install(root); before = old.read_bytes()
                 settings = root / 'codex-home/app-server-daemon/settings.json'
                 settings.parent.mkdir(); settings.write_text('{"original":true}')
+                legacy_log = settings.parent / 'app-server.stderr.log'; legacy_log.touch()
                 state = root / 'daemon-running'; state.touch()
                 (root / 'bin').mkdir()
                 old_cli = root / 'bin/codex'

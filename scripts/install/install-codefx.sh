@@ -14,10 +14,26 @@ case "$CODEFX_INSTALL_REF" in ''|*[!A-Za-z0-9_./-]*|*[.][.]*|/*) echo 'Invalid C
 fetch() (
   url=$1; output=$2
   case "$url" in https://*) ;; *) echo 'Installer downloads require HTTPS.' >&2; exit 2 ;; esac
+  auth_dir=""
+  trap '[ -z "$auth_dir" ] || rm -rf "$auth_dir"' EXIT
+  case "$url" in "https://api.github.com/repos/$CODEFX_GITHUB_REPO/"*)
+    if [ -n "${CODEFX_GITHUB_TOKEN:-}" ]; then
+      case "$CODEFX_GITHUB_TOKEN" in *[!A-Za-z0-9._~+/=-]*) echo 'Invalid CODEFX_GITHUB_TOKEN.' >&2; exit 1 ;; esac
+      auth_dir=$(mktemp -d)
+      printf 'header = "Authorization: Bearer %s"\n' "$CODEFX_GITHUB_TOKEN" > "$auth_dir/curl.conf"
+      printf 'header = Authorization: Bearer %s\n' "$CODEFX_GITHUB_TOKEN" > "$auth_dir/wgetrc"
+    fi ;;
+  esac
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 10 --max-time 120 "$url" -o "$output.part"
+    set --
+    if [ -n "$auth_dir" ]; then set -- --config "$auth_dir/curl.conf"; fi
+    curl "$@" -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 10 --max-time 120 "$url" -o "$output.part"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q --https-only -t 3 -T 120 -O "$output.part" "$url"
+    if [ -n "$auth_dir" ]; then
+      WGETRC="$auth_dir/wgetrc" wget -q --https-only -t 3 -T 120 -O "$output.part" "$url"
+    else
+      wget -q --https-only -t 3 -T 120 -O "$output.part" "$url"
+    fi
   else
     echo 'curl or wget is required to install Codefx.' >&2; exit 1
   fi

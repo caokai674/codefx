@@ -49,7 +49,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
     $target = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
     $asset = "codex-package-$target.tar.gz"
     $fixture = @{ Metadata = $null; Archive = $null; Sums = $null; Active = $false; BadHash = $false; ManagerCalls = 0; Downloads = 0; FailCache = $false }
-    function Invoke-RestMethod { param([string]$Uri, [int]$TimeoutSec) return $fixture.Metadata }
+    function Invoke-RestMethod { param([string]$Uri, [int]$TimeoutSec, [object]$Headers) return $fixture.Metadata }
     function Invoke-WebRequest {
         param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile, [int]$TimeoutSec)
         $fixture.Downloads++
@@ -125,6 +125,9 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
         if ($case -in @('daemon','daemon-running')) {
             New-Item -ItemType Directory -Force -Path (Join-Path $env:CODEX_HOME 'app-server-daemon') | Out-Null
             '{}' | Set-Content -LiteralPath (Join-Path $env:CODEX_HOME 'app-server-daemon\settings.json')
+            $daemonRelease = Join-Path $env:CODEX_HOME 'packages\app-server-daemon\releases\old'
+            New-Item -ItemType Directory -Force -Path $daemonRelease | Out-Null
+            New-Item -ItemType Junction -Path (Join-Path $env:CODEX_HOME 'packages\app-server-daemon\current') -Target $daemonRelease | Out-Null
         }
         if ($case -eq 'daemon-running') {
             $shims = Join-Path $caseRoot 'npm shims'; New-Item -ItemType Directory -Path $shims | Out-Null
