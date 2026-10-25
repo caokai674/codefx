@@ -93,13 +93,18 @@ exit $result
     $trigger = New-ScheduledTaskTrigger -Once -At ([DateTime]::Now.AddHours(1))
     $null = Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -User "$env:COMPUTERNAME\$user" -Password $password -RunLevel Limited -Force
     $registered = $true
+    $launchedAt = [DateTime]::Now.AddSeconds(-2)
     Start-ScheduledTask -TaskName $taskName
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $completion = Join-Path $root 'exitcode.txt'
     while (-not (Test-Path -LiteralPath $completion)) {
-        if ($watch.Elapsed.TotalSeconds -ge 600) { throw 'Non-administrator Windows checks timed out.' }
-        if ($watch.Elapsed.TotalSeconds -gt 15 -and (Get-ScheduledTask -TaskName $taskName).State -eq 'Ready') {
-            throw ("Scheduled CI check exited without a completion record: " + (Get-ScheduledTaskInfo -TaskName $taskName).LastTaskResult)
+        $info = Get-ScheduledTaskInfo -TaskName $taskName
+        if ($watch.Elapsed.TotalSeconds -ge 600 -or
+            ($watch.Elapsed.TotalSeconds -gt 15 -and $info.LastRunTime -ge $launchedAt -and (Get-ScheduledTask -TaskName $taskName).State -eq 'Ready') -or
+            ($watch.Elapsed.TotalSeconds -gt 90 -and $info.LastRunTime -lt $launchedAt)) {
+            Write-Host (Export-ScheduledTask -TaskName $taskName)
+            Write-Host ($info | Format-List LastRunTime,LastTaskResult,NextRunTime | Out-String)
+            throw ("Scheduled CI check has no completion record: " + $info.LastTaskResult)
         }
         Start-Sleep -Milliseconds 500
     }
