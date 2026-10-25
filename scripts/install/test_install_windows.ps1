@@ -37,6 +37,15 @@ Add-Type -TypeDefinition 'using System; public class OldFixture { public static 
 '@ | Set-Content -LiteralPath $compile
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $compile $root
     if ($LASTEXITCODE -ne 0) { throw 'Fixture compilation failed.' }
+    $archiveWriter = Join-Path $root 'archive.py'
+    @'
+from pathlib import Path
+import sys, tarfile
+package = Path(sys.argv[1])
+with tarfile.open(sys.argv[2], 'w:gz') as archive:
+    for path in sorted(package.rglob('*')):
+        archive.add(path, arcname=str(path.relative_to(package)), recursive=False)
+'@ | Set-Content -LiteralPath $archiveWriter -Encoding ASCII
     $target = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
     $asset = "codex-package-$target.tar.gz"
     $fixture = @{ Metadata = $null; Archive = $null; Sums = $null; Active = $false; BadHash = $false; ManagerCalls = 0 }
@@ -71,7 +80,7 @@ Add-Type -TypeDefinition 'using System; public class OldFixture { public static 
         @{ version='0.164.0'; target=$(if ($case -eq 'target') { 'wrong-target' } else { $target }); entrypoint='bin/codex.exe' } |
             ConvertTo-Json | Set-Content -LiteralPath (Join-Path $package 'codex-package.json')
         $fixture.Archive = Join-Path $caseRoot $asset
-        & tar -czf $fixture.Archive -C $package bin codex-path codex-resources codex-package.json
+        & python $archiveWriter $package $fixture.Archive
         if ($LASTEXITCODE -ne 0) { throw 'Fixture archive creation failed.' }
         $fixture.Sums = Join-Path $caseRoot 'codex-package_SHA256SUMS'
         ((Get-FileHash -LiteralPath $fixture.Archive -Algorithm SHA256).Hash.ToLowerInvariant() + "  $asset") |

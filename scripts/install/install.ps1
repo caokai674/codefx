@@ -1160,17 +1160,59 @@ function Update-CodefxDaemon {
     }
 }
 
+function Invoke-CodefxArchiveTool {
+    param([string]$Archive, [ValidateSet('list','types','extract')][string]$Mode, [string]$Destination)
+    # Some Windows tar builds use an ANSI argv. Stream the archive through stdin
+    # and set the Unicode working directory through CreateProcessW instead.
+    $systemTar = Join-Path $env:SystemRoot 'System32\tar.exe'
+    if (-not [Environment]::Is64BitProcess) { $systemTar = Join-Path $env:SystemRoot 'Sysnative\tar.exe' }
+    if (-not (Test-Path -LiteralPath $systemTar)) {
+        $available = Get-Command tar.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+        $systemTar = $available.Source
+    }
+    $start = New-Object Diagnostics.ProcessStartInfo
+    $start.FileName = $systemTar
+    $start.Arguments = switch ($Mode) { 'list' { '-tzf -' }; 'types' { '-tvzf -' }; 'extract' { '-xzf -' } }
+    if ($Mode -eq 'extract') { $start.WorkingDirectory = $Destination }
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $proc = New-Object Diagnostics.Process
+    $proc.StartInfo = $start
+    $source = $null
+    try {
+        if (-not $proc.Start()) { throw 'Cannot start the archive reader.' }
+        $stdout = $proc.StandardOutput.ReadToEndAsync()
+        $stderr = $proc.StandardError.ReadToEndAsync()
+        $source = [IO.File]::OpenRead($Archive)
+        $copy = $source.CopyToAsync($proc.StandardInput.BaseStream)
+        if (-not $copy.Wait(300000)) { throw 'Archive input timed out.' }
+        $proc.StandardInput.Close()
+        if (-not $proc.WaitForExit(300000)) { throw 'Archive processing timed out.' }
+        $output = $stdout.GetAwaiter().GetResult()
+        $errorText = $stderr.GetAwaiter().GetResult()
+        if ($proc.ExitCode -ne 0) { throw "Archive reader failed: $errorText" }
+        return $output
+    } catch {
+        try { if (-not $proc.HasExited) { $proc.Kill() } } catch {}
+        throw
+    } finally {
+        if ($null -ne $source) { $source.Dispose() }
+        $proc.Dispose()
+    }
+}
+
 function Assert-CodefxArchive {
     param([string]$Archive)
-    $names = @(& tar -tzf $Archive)
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot list package archive.' }
+    $names = @((Invoke-CodefxArchiveTool $Archive list) -split "`r?`n" | Where-Object { $_.Length -gt 0 })
     foreach ($name in $names) {
         if ($name -match '(^[/\\]|\\|(^|/)\.\.(/|$)|[\x00-\x1f]|:)' -or $name -match '(?i)(^|/)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])([./]|$)' -or $name -match '[. ](/|$)') {
             throw "Unsafe archive member: $name"
         }
     }
-    $types = @(& tar -tvzf $Archive)
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect package archive.' }
+    $types = @((Invoke-CodefxArchiveTool $Archive types) -split "`r?`n" | Where-Object { $_.Length -gt 0 })
     foreach ($line in $types) { if ($line -notmatch '^[-d]') { throw 'Archive links and special files are not allowed.' } }
 }
 
@@ -1356,16 +1398,14 @@ try {
             New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
             Assert-CodefxArchive $archivePath
             if ($installLayout -eq "Package") {
-                tar -xzf $archivePath -C $stagingDir
-                if ($LASTEXITCODE -ne 0) { throw "Codefx package extraction failed." }
+                $null = Invoke-CodefxArchiveTool $archivePath extract $stagingDir
                 if (-not (Test-PackageContentsAreComplete -PackageDir $stagingDir)) {
                     throw "Downloaded Codex package archive did not contain the expected package layout."
                 }
             } else {
                 $extractDir = Join-Path $tempDir "extract"
                 New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-                tar -xzf $archivePath -C $extractDir
-                if ($LASTEXITCODE -ne 0) { throw "Codefx npm package extraction failed." }
+                $null = Invoke-CodefxArchiveTool $archivePath extract $extractDir
 
                 $vendorRoot = Join-Path $extractDir "package/vendor/$target"
                 $resourcesDir = Join-Path $stagingDir "codex-resources"
