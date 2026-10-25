@@ -86,6 +86,6 @@ else
 fi
 fetch "$installer_url" "$tmp_dir/install.sh"
 export CODEFX_GITHUB_REPO
-export CODEX_NON_INTERACTIVE="${CODEX_NON_INTERACTIVE:-1}"
+export CODEX_NON_INTERACTIVE="${CODEX_NON_INTERACTIVE:-false}"
 export CODEX_INSTALLER_USE_RELEASES_OPENAI_COM="${CODEX_INSTALLER_USE_RELEASES_OPENAI_COM:-false}"
 sh "$tmp_dir/install.sh" "$@"
