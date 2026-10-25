@@ -266,7 +266,7 @@ LOCK_FILE="$STANDALONE_ROOT/install.lock"
 os=darwin
 CF_LOCK_TIMEOUT=1
 # Force the portable mkdir-lock branch, including on Linux.
-command() {{ if [ "${{2:-}}" = flock ]; then return 1; fi; command "$@"; }}
+command() {{ case "${{2:-}}" in flock|lockf) return 1 ;; esac; command "$@"; }}
 mkdir "$LOCK_DIR"
 printf '%s\\n' "$$" > "$LOCK_DIR/pid"
 date +%s > "$LOCK_DIR/started_at"
@@ -275,6 +275,45 @@ acquire_install_lock
             result = subprocess.run(['/bin/sh'], input=code, capture_output=True, text=True, timeout=5)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('lock timed out', result.stderr)
+
+    def test_fresh_unpublished_directory_lock_is_not_stolen(self):
+        prefix = INSTALL_SCRIPT.read_text().split('parse_args "$@"')[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); lock = root / 'install.lock.d'; lock.mkdir()
+            code = prefix + f'''
+STANDALONE_ROOT={shlex.quote(tmp)}
+LOCK_DIR="$STANDALONE_ROOT/install.lock.d"
+LOCK_FILE="$STANDALONE_ROOT/install.lock"
+CF_LOCK_TIMEOUT=1
+command() {{ case "${{2:-}}" in flock|lockf) return 1 ;; esac; command "$@"; }}
+acquire_install_lock
+'''
+            result = subprocess.run(['/bin/sh'], input=code, capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('lock timed out', result.stderr)
+            self.assertTrue(lock.is_dir())
+            self.assertFalse((lock / 'pid').exists())
+
+    @unittest.skipUnless(shutil.which('flock'), 'Requires native flock')
+    def test_flock_without_wait_option_coordinates_on_the_rust_lock_file(self):
+        import fcntl
+        prefix = INSTALL_SCRIPT.read_text().split('parse_args "$@"')[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(Path(tmp) / 'install.lock', 'w') as held:
+                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                code = prefix + f'''
+STANDALONE_ROOT={shlex.quote(tmp)}
+LOCK_DIR="$STANDALONE_ROOT/install.lock.d"
+LOCK_FILE="$STANDALONE_ROOT/install.lock"
+os=linux
+CF_LOCK_TIMEOUT=1
+flock() {{ [ "$1" != --help ] || return 1; command flock "$@"; }}
+acquire_install_lock
+'''
+                result = subprocess.run(['/bin/sh'], input=code, capture_output=True, text=True, timeout=5)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('lock timed out', result.stderr)
+                self.assertFalse((Path(tmp) / 'install.lock.d').exists())
 
     def test_symlinked_shell_profile_is_updated_and_failure_restores_target(self):
         with tempfile.TemporaryDirectory() as tmp:

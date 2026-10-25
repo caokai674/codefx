@@ -67,8 +67,10 @@ exit $result
     [IO.File]::WriteAllText((Join-Path $root 'launch.ps1'), $launcher, $utf8)
     # Limit access to this test account and the runner administrator/SYSTEM.
     $sid = (New-Object Security.Principal.NTAccount($env:COMPUTERNAME, $user)).Translate([Security.Principal.SecurityIdentifier]).Value
-    $null = & icacls.exe $root /inheritance:r /grant:r "*${sid}:(OI)(CI)M" '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /T /Q 2>&1
-    if ($LASTEXITCODE -ne 0) { throw 'Could not protect the isolated CI directory.' }
+    $runnerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $aclResult = & icacls.exe $root /inheritance:r /grant:r "*${sid}:(OI)(CI)F" "*${runnerSid}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' /T /Q 2>&1
+    if ($LASTEXITCODE -ne 0) { throw ('Could not protect the isolated CI directory: ' + ($aclResult | Out-String)) }
+    Write-Host ("Isolated CI directory ACL: " + (Get-Acl -LiteralPath $root).Sddl)
     $executable = (Get-Command ($Engine + '.exe') -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $credential = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$user", (ConvertTo-SecureString $password -AsPlainText -Force))
     $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $root 'launch.ps1') + '" "' + $root + '" "' + $scriptName + '"'

@@ -722,13 +722,17 @@ mkdir_lock_is_stale() {
   esac
 
   case "$pid" in
-    ''|*[!0-9]*) ;;
+    ''|*[!0-9]*|0) ;;
     *) if kill -0 "$pid" 2>/dev/null; then return 1; else return 0; fi ;;
   esac
 
-  if [ "$started_at" -eq 0 ] || [ "$now" -eq 0 ]; then
-    return 0
+  # Another installer may have created the directory but not written its PID
+  # yet. Match the Rust installer's grace period before retiring an empty lock.
+  if [ "$started_at" -eq 0 ]; then
+    started_at=$(stat -c '%Y' "$LOCK_DIR" 2>/dev/null || stat -f '%m' "$LOCK_DIR" 2>/dev/null || printf '0')
   fi
+  case "$started_at" in ''|*[!0-9]*) return 1 ;; esac
+  if [ "$started_at" -eq 0 ] || [ "$now" -eq 0 ]; then return 1; fi
 
   [ $((now - started_at)) -ge "$LOCK_STALE_AFTER_SECS" ]
 }
@@ -736,14 +740,31 @@ mkdir_lock_is_stale() {
 acquire_install_lock() {
   mkdir -p "$STANDALONE_ROOT"
 
-  if command -v flock >/dev/null 2>&1 && flock --help 2>&1 | grep -q -- '-w'; then
+  # Use the same primitive as Rust's acquire_install_lock. BSD lockf locks the
+  # whole child invocation; its -k option preserves the shared lock-file inode.
+  if [ "${os:-}" = darwin ] && command -v lockf >/dev/null 2>&1; then
+    if [ "${CODEFX_LOCKF_FILE:-}" = "$LOCK_FILE" ]; then
+      unset CODEFX_LOCKF_FILE
+      lock_kind="lockf-command"
+      return
+    fi
+    CODEFX_LOCKF_FILE="$LOCK_FILE"; export CODEFX_LOCKF_FILE
+    lockf -k -t "$CF_LOCK_TIMEOUT" "$LOCK_FILE" /bin/sh "$0" "$@"
+    exit "$?"
+  fi
+
+  lock_deadline=$(( $(date +%s) + CF_LOCK_TIMEOUT ))
+  if command -v flock >/dev/null 2>&1; then
     exec 9>"$LOCK_FILE"
-    flock -w "$CF_LOCK_TIMEOUT" 9
+    # BusyBox flock supports -n without necessarily implementing -w.
+    while ! flock -n 9; do
+      [ "$(date +%s)" -lt "$lock_deadline" ] || { echo "Installer lock timed out." >&2; return 1; }
+      sleep 1
+    done
     lock_kind="flock"
     return
   fi
 
-  lock_deadline=$(( $(date +%s) + CF_LOCK_TIMEOUT ))
   while ! mkdir "$LOCK_DIR" 2>/dev/null; do
     if mkdir_lock_is_stale; then
       warn "Removing stale installer lock at $LOCK_DIR"
@@ -1713,7 +1734,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-acquire_install_lock
+acquire_install_lock "$@"
 if [ -d "$STANDALONE_ROOT/.transaction" ]; then
   cf_tx="$STANDALONE_ROOT/.transaction"
   if [ -f "$cf_tx/committed" ]; then
