@@ -81,3 +81,29 @@ jobs:
     uses: ./.github/workflows/codefx-native-smoke.yml
     with:
       tag: ${{ inputs.tag }}
+  installers:
+    needs: smoke
+    runs-on: ubuntu-24.04
+    permissions: {contents: write}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with: {persist-credentials: false}
+      - name: Publish immutable installer bundle after all native checks pass
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/install/bundle_installers.py --source "$GITHUB_SHA" --tag "$RELEASE_TAG" --output dist-installers
+          cd dist-installers
+          for asset in *; do
+            digest="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets[] | [.name,.digest] | @tsv' | awk -F '\t' -v name="$asset" '$1 == name {print $2}')"
+            if [[ -n "$digest" ]]; then
+              [[ "$digest" == "sha256:$(sha256sum "$asset" | cut -d ' ' -f 1)" ]]
+            else
+              gh release upload "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY"
+              uploaded="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets[] | [.name,.digest] | @tsv' | awk -F '\t' -v name="$asset" '$1 == name {print $2}')"
+              [[ "$uploaded" == "sha256:$(sha256sum "$asset" | cut -d ' ' -f 1)" ]]
+            fi
+          done
