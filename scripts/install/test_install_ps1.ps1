@@ -38,15 +38,15 @@ try {
         }
     }
 
-    $script:managerCalls = 0
-    $script:downloadAttempted = $false
-    function npm { $script:managerCalls++ }
-    function bun { $script:managerCalls++ }
-    function pnpm { $script:managerCalls++ }
-    function vp { $script:managerCalls++ }
+    $global:CodefxTestManagerCalls = 0
+    $global:CodefxTestDownloadAttempted = $false
+    function npm { $global:CodefxTestManagerCalls++ }
+    function bun { $global:CodefxTestManagerCalls++ }
+    function pnpm { $global:CodefxTestManagerCalls++ }
+    function vp { $global:CodefxTestManagerCalls++ }
     function Invoke-WebRequest {
         param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile)
-        $script:downloadAttempted = $true
+        $global:CodefxTestDownloadAttempted = $true
         throw 'Mock installer download failure'
     }
     $failed = $false
@@ -56,10 +56,11 @@ try {
         if ($_.Exception.Message -notmatch 'Mock installer download failure') { throw }
         $failed = $true
     }
-    if (-not $failed -or -not $script:downloadAttempted -or $script:managerCalls -ne 0) {
+    if (-not $failed -or -not $global:CodefxTestDownloadAttempted -or $global:CodefxTestManagerCalls -ne 0) {
         throw 'Bootstrap download failure must preserve the existing package.'
     }
     Write-Host 'PowerShell syntax, executable identity and bootstrap failure checks passed.'
 } finally {
     Remove-Item -LiteralPath $testRoot -Recurse -Force
+    Remove-Variable -Name CodefxTestManagerCalls, CodefxTestDownloadAttempted -Scope Global -ErrorAction SilentlyContinue
 }
