@@ -54,14 +54,18 @@ jobs:
           mkdir -p dist
           git diff -- codex-rs/Cargo.lock > "dist/codefx-lock-$TARGET.patch"
           asset="codex-package-$TARGET.tar.gz"
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qxF "$asset"; then
+          # Read the complete REST response before searching. With pipefail,
+          # grep -q can close a live gh pipe early and report a false absence.
+          assets="$RUNNER_TEMP/codefx-release-assets.txt"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets[].name' > "$assets"
+          if grep -qxF "$asset" "$assets"; then
             sums=codex-package_SHA256SUMS
-            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qxF "$TARGET.sha256"; then sums="$TARGET.sha256"; fi
+            if grep -qxF "$TARGET.sha256" "$assets"; then sums="$TARGET.sha256"; fi
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern "$sums" --dir dist
             python -c 'from pathlib import Path; import hashlib,sys; p=Path("dist")/sys.argv[1]; h=hashlib.sha256(p.read_bytes()).hexdigest(); assert any(x.split()==[h,p.name] for x in (Path("dist")/sys.argv[2]).read_text().splitlines())' "$asset" "$sums"
             if [[ "$sums" != "$TARGET.sha256" ]]; then rm "dist/$sums"; fi
             for record in "codefx-build-$TARGET.json" "codefx-lock-$TARGET.patch"; do
-              if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qxF "$record"; then
+              if grep -qxF "$record" "$assets"; then
                 gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$record" --dir dist --clobber
               fi
             done
@@ -157,8 +161,8 @@ jobs:
           actual="$(sha256sum "$file" | cut -d ' ' -f 1)"
           python3 -c 'from pathlib import Path; import sys; assert Path(sys.argv[1]).read_text().split() == [sys.argv[2],sys.argv[3]]' "$TARGET.sha256" "$actual" "$file"
           for asset in "$file" "$TARGET.sha256" "codefx-build-$TARGET.json" "codefx-lock-$TARGET.patch"; do
-            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qxF "$asset"; then
-              digest="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets[] | [.name,.digest] | @tsv' | awk -F '\t' -v name="$asset" '$1 == name {print $2}')"
+            digest="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets[] | [.name,.digest] | @tsv' | awk -F '\t' -v name="$asset" '$1 == name {print $2}')"
+            if [[ -n "$digest" ]]; then
               [[ "$digest" == "sha256:$(sha256sum "$asset" | cut -d ' ' -f 1)" ]]
             else
               gh release upload "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY"
