@@ -91,13 +91,23 @@ exit $result
     # runner's job, while retaining a normal user token and default protections.
     $action = New-ScheduledTaskAction -Execute $executable -Argument $arguments -WorkingDirectory $root
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 12)
+    $settings.Enabled = $true; $settings.AllowDemandStart = $true
     $null = Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -User "$env:COMPUTERNAME\$user" -Password $password -RunLevel Limited -Force
     $registered = $true
+    $scheduler = New-Object -ComObject Schedule.Service
+    $scheduler.Connect()
+    $scheduled = $scheduler.GetFolder('\').GetTask($taskName)
+    $scheduled.Enabled = $true
+    Write-Host ("Scheduled task enabled={0}, demand-start={1}" -f $scheduled.Enabled, $scheduled.Definition.Settings.AllowDemandStart)
+    if (-not $scheduled.Definition.Settings.AllowDemandStart) { throw 'The isolated task does not allow demand starts.' }
     $launchedAt = [DateTime]::Now.AddSeconds(-2)
-    Start-ScheduledTask -TaskName $taskName
+    $runningTask = $scheduled.RunEx($null, 2, 0, $null)
+    if ($null -eq $runningTask) { throw 'Task Scheduler did not create a running instance.' }
+    Write-Host ("Scheduled instance {0}, state={1}" -f $runningTask.InstanceGuid, $runningTask.State)
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $completion = Join-Path $root 'exitcode.txt'
     while (-not (Test-Path -LiteralPath $completion)) {
+        $runningTask.Refresh()
         $info = Get-ScheduledTaskInfo -TaskName $taskName
         if ($watch.Elapsed.TotalSeconds -ge 600 -or
             ($watch.Elapsed.TotalSeconds -gt 15 -and $info.LastRunTime -ge $launchedAt -and (Get-ScheduledTask -TaskName $taskName).State -eq 'Ready') -or
