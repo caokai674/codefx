@@ -59,6 +59,8 @@ try {
     if (-not $failed -or -not $global:CodefxTestDownloadAttempted -or $global:CodefxTestManagerCalls -ne 0) {
         throw 'Bootstrap download failure must preserve the existing package.'
     }
+    # The negative executable case deliberately sets a native exit status.
+    $global:LASTEXITCODE = 0
     Write-Host 'PowerShell syntax, executable identity and bootstrap failure checks passed.'
 } finally {
     Remove-Item -LiteralPath $testRoot -Recurse -Force
