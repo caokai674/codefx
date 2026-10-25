@@ -625,7 +625,7 @@ add_to_path() {
       ;;
   esac
 
-  profile="$(pick_profile)"
+  profile="$(cf_resolve_path "$(pick_profile)")"
   path_profile="$profile"
   begin_marker="# >>> Codex installer >>>"
   end_marker="# <<< Codex installer <<<"
@@ -1266,7 +1266,7 @@ cf_guarded() {
 cf_run() (
   # Portable bounded execution; no dependency on GNU timeout on macOS.
   "$@" & cf_child=$!
-  ( trap 'kill "$cf_sleep" 2>/dev/null; exit 0' TERM INT
+  ( trap '[ -z "${cf_sleep:-}" ] || kill "$cf_sleep" 2>/dev/null; exit 0' TERM INT
     sleep "$CF_TIMEOUT" & cf_sleep=$!
     wait "$cf_sleep"; kill -TERM "$cf_child" 2>/dev/null || exit 0
     sleep 3 & cf_sleep=$!; wait "$cf_sleep"
@@ -1277,6 +1277,17 @@ cf_run() (
   kill "$cf_watch" 2>/dev/null || true
   wait "$cf_watch" 2>/dev/null || true
   exit "$cf_result"
+)
+
+cf_resolve_path() (
+  cf_path=$1; cf_count=0
+  while [ -L "$cf_path" ]; do
+    cf_count=$((cf_count+1))
+    [ "$cf_count" -le 40 ] || { echo 'Symbolic link loop in profile path.' >&2; return 1; }
+    cf_target=$(readlink "$cf_path")
+    case "$cf_target" in /*) cf_path=$cf_target ;; *) cf_path="$(dirname "$cf_path")/$cf_target" ;; esac
+  done
+  printf '%s\n' "$cf_path"
 )
 
 cf_inventory() (
@@ -1306,10 +1317,10 @@ cf_inventory() (
 
 cf_processes() (
   # ps failure is an error, rather than evidence that no process exists.
-  ps -u "$(id -u)" -o pid= -o ppid= -o comm= > "$tmp_dir/processes" || {
+  ps -u "$(id -u)" -o pid= -o ppid= -o stat= -o comm= > "$tmp_dir/processes" || {
     echo 'Cannot inspect running processes; installation was stopped safely.' >&2; return 1;
   }
-  awk '$3 ~ /(^|\/)(codex|codefx)(\.exe)?$/ { print $1, $2, $3 }' "$tmp_dir/processes"
+  awk '$3 !~ /^Z/ && $4 ~ /(^|\/)(codex|codefx)(\.exe)?$/ { print $1, $2, $4 }' "$tmp_dir/processes"
 )
 
 cf_prepare() {
@@ -1343,7 +1354,7 @@ cf_prepare() {
   if [ "$DAEMON_ONLY" != 1 ]; then
     cf_snapshot "$BIN_PATH" visible
     cf_snapshot "$CODE_MODE_HOST_BIN_PATH" host
-    cf_snapshot "$(pick_profile)" profile
+    cf_snapshot "$(cf_resolve_path "$(pick_profile)")" profile
   fi
   cf_snapshot "$CODEX_HOME_DIR/packages/app-server-daemon/current" daemon-current
   cf_snapshot "$CODEX_HOME_DIR/packages/app-server-daemon/auto-update-version" daemon-channel
@@ -1446,6 +1457,8 @@ cf_migrate_daemon() {
       cf_run "$BIN_PATH" app-server daemon start || return 1
       cf_run "$BIN_PATH" app-server daemon version > "$cf_tx/daemon-health" || return 1
       grep -Eq '"status"[[:space:]]*:[[:space:]]*"running"' "$cf_tx/daemon-health" || return 1
+      cf_daemon_version=$(tr -d '\n\r' < "$cf_tx/daemon-health" | sed -n 's/.*"appServerVersion"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+      [ "$cf_daemon_version" = "$resolved_version" ] || { echo 'Daemon version health check failed.' >&2; return 1; }
     else
       # from-cli may start a runtime; preserve the original stopped state.
       cf_run "$BIN_PATH" app-server daemon stop || return 1
@@ -1468,7 +1481,7 @@ cf_validate_archive() (
 cf_finish() {
   if [ -n "$cf_tx" ] && [ -d "$cf_tx" ]; then
     # Keep the previous entrypoints and profile available for manual recovery.
-    rm -f "$cf_tx/restart-cli"
+    rm -f "$cf_tx/migration-attempted" "$cf_tx/restart-cli"
     mv "$cf_tx" "$STANDALONE_ROOT/.rollback.$(date +%s).$$"
     cf_tx=""
   fi

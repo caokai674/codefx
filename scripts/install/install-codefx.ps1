@@ -44,6 +44,11 @@ try {
     if (-not (Test-Path -LiteralPath $engine)) { $engine = Join-Path $PSHOME 'pwsh' }
     & $engine -NoLogo -NoProfile -ExecutionPolicy Bypass -File $installer @args
     if ($LASTEXITCODE -ne 0) { throw "Codefx installer exited with code $LASTEXITCODE." }
+    if ($env:CODEX_INSTALL_DAEMON_ONLY -ne '1' -and $args -notcontains '-DryRun') {
+        $bin = if ($env:CODEX_INSTALL_DIR) { $env:CODEX_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\OpenAI\Codex\bin' }
+        $env:Path = (@($bin) + @($env:Path.Split(';') | Where-Object { $_ -and $_.TrimEnd('\') -ine $bin.TrimEnd('\') })) -join ';'
+        Write-Host "Codefx command available in this PowerShell session: $bin\codex.exe"
+    }
 } finally {
     foreach ($key in $previousEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $previousEnvironment[$key], 'Process') }
     Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue

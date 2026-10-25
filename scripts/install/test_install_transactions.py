@@ -42,7 +42,7 @@ class Transactions(unittest.TestCase):
 
     def test_dry_run_has_no_installation_or_profile_side_effects(self):
         with tempfile.TemporaryDirectory(prefix='codefx space ') as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             result = self.run_install(root, self.package(root), arguments=('--dry-run',))
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse((root / 'codex-home').exists())
@@ -52,7 +52,7 @@ class Transactions(unittest.TestCase):
     def test_rejects_traversal_links_and_metadata_mismatch(self):
         for bad in ('traversal', 'symlink', 'hardlink', 'target', 'entrypoint'):
             with self.subTest(bad=bad), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp); package = self.package(root)
+                root = Path(tmp).resolve(); package = self.package(root)
                 archive, checksum, metadata = package
                 old, visible, current = self.old_install(root)
                 before = old.read_bytes()
@@ -80,7 +80,7 @@ class Transactions(unittest.TestCase):
 
     def test_entrypoint_failure_restores_same_version_bytes_and_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp); package = self.package(root)
+            root = Path(tmp).resolve(); package = self.package(root)
             old, visible, current = self.old_install(root); before = old.read_bytes()
             (root / 'home').mkdir(); profile = root / 'home/.profile'; profile.write_text('# preserve profile\n')
             # A real failed filesystem operation after release validation and commit.
@@ -99,7 +99,7 @@ exec /bin/ln "$@"
 
     def test_recovery_of_interrupted_selection_precedes_next_install(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp); package = self.package(root)
+            root = Path(tmp).resolve(); package = self.package(root)
             old, visible, current = self.old_install(root)
             tx = current.parent / '.transaction'; tx.mkdir()
             (tx / 'current.path').write_text(str(current) + '\n')

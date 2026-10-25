@@ -329,6 +329,7 @@ function Invoke-WithInstallLock {
         & $Script
         if ($script:Cf.Prepared) {
             $script:Cf.RestartCli = $null
+            $script:Cf.MigrationAttempted = $false
             Save-CodefxJournal
             Move-Item -LiteralPath $script:Cf.Root -Destination (Join-Path $standaloneRoot ('.rollback.' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + '.' + $PID))
         }
@@ -1015,6 +1016,10 @@ function Save-CodefxPath {
             Add-JunctionSupportType
             $record.Kind = 'junction'
             $record.Backup = [CodexInstaller.JunctionV3]::ResolveDirectory($Path)
+            # Windows PowerShell's junction provider does not normalize Win32
+            # extended-length prefixes. Store a provider-compatible target.
+            if ($record.Backup.StartsWith('\\?\UNC\')) { $record.Backup = '\\' + $record.Backup.Substring(8) }
+            elseif ($record.Backup.StartsWith('\\?\')) { $record.Backup = $record.Backup.Substring(4) }
         } elseif ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
             throw "Unsupported reparse point at $Path."
         } elseif ($item.PSIsContainer) {
@@ -1134,7 +1139,7 @@ function Update-CodefxDaemon {
         if ($script:Cf.RestartCli) {
             $null = Invoke-CodefxBounded $newCli @('app-server','daemon','start')
             $health = (Invoke-CodefxBounded $newCli @('app-server','daemon','version')) | ConvertFrom-Json
-            if ($health.status -ne 'running') { throw 'Daemon health check failed.' }
+            if ($health.status -ne 'running' -or $health.appServerVersion -cne $resolvedVersion) { throw 'Daemon health check failed.' }
         } else { $null = Invoke-CodefxBounded $newCli @('app-server','daemon','stop') }
     }
 }
