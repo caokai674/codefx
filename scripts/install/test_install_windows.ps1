@@ -118,7 +118,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
         $cache = Join-Path $env:CODEX_HOME 'version.json'
         $oldCache = '{"latest_version":"999.0.0","dismissed_version":"999.0.0"}'
         [IO.File]::WriteAllText($cache, $oldCache)
-        if ($case -in @('daemon','daemon-running','active-timeout','committed-recovery','interrupted-recovery','cache-rollback','flat-native','flat-rollback','empty-native','empty-rollback','unknown-native')) {
+        if ($case -in @('daemon','daemon-running')) {
             New-Item -ItemType Directory -Force -Path (Join-Path $env:CODEX_HOME 'app-server-daemon') | Out-Null
             '{}' | Set-Content -LiteralPath (Join-Path $env:CODEX_HOME 'app-server-daemon\settings.json')
         }
@@ -160,7 +160,7 @@ exit /b 1
                 & $base -Release '0.164.0' -ProcessTimeout 3
                 if ([IO.File]::ReadAllText($cache) -cne '{"dismissed_version":"0.165.0"}') { throw 'Same-source update lost version dismissals.' }
             }
-            if ($case -in @('committed-recovery','interrupted-recovery','cache-rollback','flat-native','flat-rollback','empty-native','empty-rollback','unknown-native')) {
+            if ($case -in @('committed-recovery','interrupted-recovery')) {
                 $receipt = Get-ChildItem -LiteralPath $standalone -Directory -Force -Filter '.rollback.*' | Select-Object -First 1
                 $journal = Join-Path $receipt.FullName 'journal.json'
                 if ($case -eq 'interrupted-recovery') {
