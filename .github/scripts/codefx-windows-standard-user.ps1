@@ -113,11 +113,20 @@ exit $result
     Write-Host ("Scheduled instance {0}, state={1}" -f $runningTask.InstanceGuid, $runningTask.State)
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $completion = Join-Path $root 'exitcode.txt'
+    $reportedLines = 0
     while (-not (Test-Path -LiteralPath $completion)) {
         try { $runningTask.Refresh() } catch { # A completed instance has no live COM state.
             Write-Verbose $_
         }
         $info = Get-ScheduledTaskInfo -TaskName $taskName
+        $liveLog = Join-Path $root 'stdout.log'
+        if (Test-Path -LiteralPath $liveLog) {
+            $lines = @(Get-Content -LiteralPath $liveLog -ErrorAction SilentlyContinue)
+            if ($lines.Count -gt $reportedLines) {
+                $lines[$reportedLines..($lines.Count - 1)] | ForEach-Object { Write-Host $_ }
+                $reportedLines = $lines.Count
+            }
+        }
         if ($watch.Elapsed.TotalSeconds -ge 600 -or
             ($watch.Elapsed.TotalSeconds -gt 15 -and $info.LastRunTime -ge $launchedAt -and (Get-ScheduledTask -TaskName $taskName).State -eq 'Ready') -or
             ($watch.Elapsed.TotalSeconds -gt 90 -and $info.LastRunTime -lt $launchedAt)) {

@@ -86,8 +86,8 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
     }
     function Get-CimInstance {
         param([string]$ClassName, [string]$Filter, [object]$ErrorAction, [uint32]$OperationTimeoutSec)
-        if ($Filter -match '^ProcessId') { return [pscustomobject]@{ ParentProcessId = $(if ($case -eq 'ancestry-cycle') { $PID } else { 0 }) } }
-        if ($fixture.Active) { [pscustomobject]@{ Name = 'codex.exe'; ProcessId = 999999; ParentProcessId = 1; ExecutablePath = 'C:\fixture\codex.exe' } }
+        if ($Filter -match '^ProcessId') { return [pscustomobject]@{ ParentProcessId = $(if ($case -in @('ancestry-cycle','ancestry-newer')) { $PID } else { 0 }) } }
+        if ($fixture.Active) { [pscustomobject]@{ Name = 'codex.exe'; ProcessId = 999999; ParentProcessId = 1; ExecutablePath = 'C:\fixture\codex.exe'; CreationDate = $(if ($case -eq 'ancestry-newer') { [DateTime]::UtcNow.AddMinutes(1) } else { $null }) } }
     }
     function Invoke-CimMethod { param($InputObject, $MethodName, $ErrorAction) [pscustomobject]@{ ReturnValue=0; Sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value } }
     function npm { $fixture.ManagerCalls++; throw 'Unexpected package-manager mutation.' }
@@ -95,7 +95,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
     function bun { $fixture.ManagerCalls++; throw 'Unexpected package-manager mutation.' }
     function vp { $fixture.ManagerCalls++; throw 'Unexpected package-manager mutation.' }
 
-    foreach ($case in @('success','checksum','target','active','dry-run','visible','daemon','repeat','guarded','daemon-running','active-timeout','committed-recovery','interrupted-recovery','cache-rollback','flat-native','flat-rollback','empty-native','empty-rollback','unknown-native','sidecar','daemon-managed-only','ancestry-cycle')) {
+    foreach ($case in @('success','checksum','target','active','dry-run','visible','daemon','repeat','guarded','daemon-running','active-timeout','committed-recovery','interrupted-recovery','cache-rollback','flat-native','flat-rollback','empty-native','empty-rollback','unknown-native','sidecar','daemon-managed-only','ancestry-cycle','ancestry-newer')) {
         Write-Host "Native Windows case: $case"
         $caseRoot = Join-Path $root $case
         $package = Join-Path $caseRoot 'package'
@@ -119,7 +119,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
             $fixture.Metadata.assets[1].name = "$target.sha256"
             $fixture.Metadata.assets[1].browser_download_url = "https://fixture.invalid/$target.sha256"
         }
-        $fixture.Active = $case -in @('active','active-timeout','ancestry-cycle'); $fixture.BadHash = $case -eq 'checksum'; $fixture.FailCache = $case -eq 'cache-rollback'
+        $fixture.Active = $case -in @('active','active-timeout','ancestry-cycle','ancestry-newer'); $fixture.BadHash = $case -eq 'checksum'; $fixture.FailCache = $case -eq 'cache-rollback'
         $env:CODEX_HOME = Join-Path $caseRoot 'home'
         $env:CODEX_INSTALL_DIR = Join-Path $caseRoot 'visible bin'
         $env:CODEX_NON_INTERACTIVE = '1'
@@ -170,12 +170,17 @@ exit /b 1
         }
         $failed = $false
         try {
-            if ($case -in @('active-timeout','ancestry-cycle')) { & $base -Release '0.164.0' -StopRunning -ProcessTimeout 2 }
+            if ($case -in @('active-timeout','ancestry-cycle','ancestry-newer')) { & $base -Release '0.164.0' -StopRunning -ProcessTimeout 2 }
             elseif ($case -in @('daemon-running','daemon-managed-only')) { & $base -Release '0.164.0' -StopRunning -ProcessTimeout 10 }
             elseif ($case -eq 'dry-run') { & $base -Release '0.164.0' -DryRun }
             else { & $base -Release '0.164.0' -ProcessTimeout 3 }
-        } catch { $failed = $true; Write-Host "Expected failure if negative case: $_" }
-        $negative = $case -in @('checksum','target','active','active-timeout','ancestry-cycle','visible','daemon','cache-rollback','flat-rollback','empty-rollback','unknown-native')
+        } catch {
+            $failed = $true
+            if ($case -eq 'ancestry-cycle' -and $_.Exception.Message -notmatch 'Cannot safely inspect process ancestry') { throw }
+            if ($case -eq 'ancestry-newer' -and $_.Exception.Message -notmatch 'Timed out waiting for Codex') { throw }
+            Write-Host "Expected failure if negative case: $_"
+        }
+        $negative = $case -in @('checksum','target','active','active-timeout','ancestry-cycle','ancestry-newer','visible','daemon','cache-rollback','flat-rollback','empty-rollback','unknown-native')
         if ($failed -ne $negative) { throw "Unexpected installer result for $case (failed=$failed)." }
         if ($negative -or $case -eq 'dry-run') {
             if ([IO.File]::ReadAllText($cache) -cne $oldCache) { throw "Original version cache was not restored for $case." }
