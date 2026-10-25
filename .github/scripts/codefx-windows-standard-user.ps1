@@ -11,14 +11,28 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hoste
     throw 'Use this helper only on a disposable GitHub-hosted Windows runner.'
 }
 $user = 'cfx_' + [guid]::NewGuid().ToString('N').Substring(0, 10)
-$password = 'Cfx!9a' + [guid]::NewGuid().ToString('N')
+$entropy = New-Object byte[] 6
+$random = [Security.Cryptography.RandomNumberGenerator]::Create()
+try { $random.GetBytes($entropy) } finally { $random.Dispose() }
+# net.exe prompts for confirmation above 14 characters, even with /add.
+$password = 'Cfx!9a' + [Convert]::ToBase64String($entropy)
 $root = Join-Path $env:RUNNER_TEMP $user
+$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host 'The GitHub runner already uses a non-administrator token.'
+    New-Item -ItemType Directory -Path $root | Out-Null
+    $env:CODEFX_TEST_ROOT = $root
+    $scriptName = if ($Mode -eq 'smoke') { 'smoke_install_windows.ps1' } else { 'test_install_windows.ps1' }
+    & (Join-Path $PSScriptRoot "../../scripts/install/$scriptName")
+    if ($LASTEXITCODE -ne 0) { throw "Non-administrator $Mode checks exited $LASTEXITCODE" }
+    return
+}
 $created = $false
 $child = $null
 $result = 1
 try {
-    $null = & net.exe user $user $password /add /expires:never 2>&1
-    if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated CI account.' }
+    $accountResult = & net.exe user $user $password /add /expires:never 2>&1
+    if ($LASTEXITCODE -ne 0) { throw ('Could not create the isolated CI account: ' + (($accountResult | Out-String).Replace($password, '[redacted]'))) }
     $created = $true
     New-Item -ItemType Directory -Path (Join-Path $root 'source'), (Join-Path $root 'temp') | Out-Null
     Copy-Item -Path (Join-Path $PSScriptRoot '../../scripts/install/*') -Destination (Join-Path $root 'source')
