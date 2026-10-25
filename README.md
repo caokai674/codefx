@@ -11,32 +11,20 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ## Quickstart
 
-### Installing Codefx on Linux x86_64
+### Codefx installation validation
 
-[Codefx CLI 0.164.0](https://github.com/hitmux/codefx/releases/tag/rust-v0.164.0) is a stable release. Prebuilt packages are currently available for Linux x86_64 (musl).
+[Codefx CLI 0.164.0](https://github.com/hitmux/codefx/releases/tag/rust-v0.164.0) is a stable release. Cross-platform installer hardening is undergoing native validation:
 
-Save and close active Codex sessions and stop any local app-server daemon before replacing the CLI:
+| Platform | Package | Real installation and daemon checks |
+| --- | --- | --- |
+| Linux x86_64 / ARM64 (musl) | Published | Passed |
+| macOS Apple Silicon | Published | Passed |
+| Windows x64 | Published | Installation and repeat installation passed; daemon validation in progress |
+| macOS Intel / Windows ARM64 | Building | Pending |
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.sh | sh
-```
+One-command replacement instructions are paused while the complete platform validation finishes. Keep your existing Codex installation. The revised installers validate the package before changing commands and retain existing package-manager registrations.
 
-Then verify the selected command:
-
-```sh
-codex --version
-```
-
-The command and executable remain named `codex`; version output reports `codefx 0.164.0`. The installer downloads and verifies SHA-256 checksums and the staged executable version before replacing the visible CLI.
-
-Current replacement scope:
-
-- Process shutdown, waiting and restart require manual handling. Running-process inspection protects cleanup of managed standalone releases.
-- Package-manager detection inspects the first `codex` on PATH and uses heuristics for npm, Bun and Homebrew. pnpm, Vite+, multiple Node installations and custom native paths require manual review.
-- An independently installed app-server daemon retains its own package and requires a separate migration.
-- Other platform packages and native replacement validation remain pending.
-
-[Review the replacement script](https://github.com/hitmux/codefx/blob/main/scripts/install/install-codefx.sh).
+[Installer source and recovery guide](docs/codefx-installer.md) · [Native package build progress](https://github.com/hitmux/codefx/actions/runs/40152919968)
 
 ### Using Codex with your ChatGPT plan
 
