@@ -4,7 +4,8 @@ param(
     [switch]$DryRun,
     [switch]$StopRunning,
     [switch]$KeepDaemon,
-    [ValidateRange(1,300)][int]$ProcessTimeout = 30
+    [ValidateRange(1,300)][int]$ProcessTimeout = 30,
+    [ValidateRange(1,600)][int]$LockTimeout = 120
 )
 
 Set-StrictMode -Version Latest
@@ -118,6 +119,7 @@ function Find-ReleaseAssetMetadata {
 
 function Invoke-CodefxDownload {
     param([string]$Uri, [string]$OutFile)
+    if (([uri]$Uri).Scheme -ne 'https') { throw 'Downloads require HTTPS.' }
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         try {
             Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $OutFile -TimeoutSec $ReleasesAssetTimeoutSec
@@ -311,7 +313,7 @@ function Invoke-WithInstallLock {
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LockPath) | Out-Null
     $lock = $null
-    $lockDeadline = [DateTime]::UtcNow.AddSeconds(120)
+    $lockDeadline = [DateTime]::UtcNow.AddSeconds($LockTimeout)
     while ($null -eq $lock) {
         try {
             $lock = [System.IO.File]::Open(
@@ -970,6 +972,17 @@ function Invoke-CodefxBounded {
     $start = New-Object System.Diagnostics.ProcessStartInfo
     $start.FileName = $File
     $start.Arguments = $quoted -join ' '
+    if ([IO.Path]::GetExtension($File) -in @('.cmd','.bat','.ps1')) {
+        # npm/pnpm/Bun shims need an interpreter. Encode the fully quoted
+        # expression so spaces, Unicode and shell metacharacters remain literal.
+        $literalFile = "'" + $File.Replace("'", "''") + "'"
+        $literalArgs = @($Arguments | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ' '
+        $expression = "& $literalFile $literalArgs; exit `$LASTEXITCODE"
+        $engine = Join-Path $PSHOME 'pwsh.exe'
+        if (-not (Test-Path -LiteralPath $engine)) { $engine = Join-Path $PSHOME 'powershell.exe' }
+        $start.FileName = $engine
+        $start.Arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($expression))
+    }
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
@@ -993,8 +1006,9 @@ function Invoke-CodefxBounded {
 
 function Get-CodefxProcesses {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $all = @(Get-CimInstance Win32_Process -Filter "Name = 'codex.exe' OR Name = 'codefx.exe' OR Name = 'codex-code-mode-host.exe'" -ErrorAction Stop)
+    $all = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'codex%.exe' OR Name LIKE 'codefx%.exe'" -ErrorAction Stop)
     foreach ($entry in $all) {
+        if ($entry.Name -notmatch '^(codex|codefx)([-_.].*)?\.exe$') { continue }
         $owner = Invoke-CimMethod -InputObject $entry -MethodName GetOwnerSid -ErrorAction Stop
         if ($owner.ReturnValue -ne 0) { throw "Cannot inspect ownership of Codex PID $($entry.ProcessId)." }
         if ($owner.Sid -eq $identity) { $entry }
@@ -1060,10 +1074,12 @@ function Start-CodefxTransaction {
     Save-CodefxPath $autoUpdateVersion channel
     if (-not $daemonOnly) { Save-CodefxPath $visibleBinDir visible }
     Save-CodefxPath (Join-Path $standaloneRoot 'selection-history') history
-    Save-CodefxPath (Join-Path $codexHome 'packages\app-server-daemon\current') daemon-current
-    Save-CodefxPath (Join-Path $codexHome 'packages\app-server-daemon\auto-update-version') daemon-channel
-    Save-CodefxPath (Join-Path $codexHome 'packages\app-server-daemon\selection-history') daemon-history
-    Save-CodefxPath (Join-Path $codexHome 'app-server-daemon\settings.json') daemon-settings
+    if (-not (Test-CodefxGuardedUpdate) -and -not $KeepDaemon) {
+        Save-CodefxPath (Join-Path $codexHome 'packages\app-server-daemon\current') daemon-current
+        Save-CodefxPath (Join-Path $codexHome 'packages\app-server-daemon\auto-update-version') daemon-channel
+        Save-CodefxPath (Join-Path $codexHome 'packages\app-server-daemon\selection-history') daemon-history
+        Save-CodefxPath (Join-Path $codexHome 'app-server-daemon\settings.json') daemon-settings
+    }
     if (-not (Test-CodefxGuardedUpdate)) {
         $oldCli = Get-ExistingCodexCommand
         if ($oldCli -and -not $KeepDaemon -and
@@ -1082,7 +1098,7 @@ function Start-CodefxTransaction {
         # window need to be closed by their owner; never use Stop-Process on them.
         foreach ($entry in $active) {
             $proc = Get-Process -Id $entry.ProcessId -ErrorAction SilentlyContinue
-            if ($null -ne $proc -and $proc.StartTime.ToUniversalTime() -eq $entry.CreationDate.ToUniversalTime()) {
+            if ($null -ne $proc -and [Math]::Abs(($proc.StartTime.ToUniversalTime() - $entry.CreationDate.ToUniversalTime()).TotalMilliseconds) -lt 1) {
                 $null = $proc.CloseMainWindow()
             }
         }
@@ -1203,6 +1219,9 @@ if ([string]::IsNullOrWhiteSpace($env:CODEX_INSTALL_DIR)) {
     $visibleBinDir = $env:CODEX_INSTALL_DIR
 }
 
+foreach ($path in @($codexHome, $visibleBinDir)) {
+    if ($path -notmatch '^[A-Za-z]:[\\/]') { throw 'CODEX_HOME and CODEX_INSTALL_DIR must use absolute paths on local Windows drives.' }
+}
 $currentVersion = Get-CurrentInstalledVersion -StandaloneCurrentDir $currentDir
 $resolvedRelease = Resolve-Release
 $resolvedVersion = $resolvedRelease.Version
@@ -1230,14 +1249,12 @@ $packageMetadata = $assetSelection.PackageMetadata
 $checksumMetadata = $assetSelection.ChecksumMetadata
 $installLayout = $assetSelection.InstallLayout
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-install-" + [System.Guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 $guardRejected = $false
 $script:Cf = @{
     Root = (Join-Path $standaloneRoot '.transaction'); Prepared = $false; Paths = @();
     ReleaseBackup = $null; ReleasePath = $releaseDir; VisibleBackup = $null; RestartCli = $null; MigrationAttempted = $false
     UserPath = [Environment]::GetEnvironmentVariable('Path', 'User'); ProcessPath = $env:Path
 }
-$cfCommitted = $false
 Write-Step 'Existing codex commands (all PATH entries):'
 Get-Command codex -All -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "    $($_.Source)" }
 if ($DryRun) {
@@ -1245,6 +1262,7 @@ if ($DryRun) {
     return
 }
 
+New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 try {
     Invoke-WithInstallLock -LockPath $lockPath -Script {
         $updaterRecord = Join-Path $codexHome "app-server-daemon\app-server-updater.pid"

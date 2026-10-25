@@ -45,6 +45,7 @@ lock_kind=""
 tmp_dir=""
 CF_STOP_RUNNING="${CODEFX_STOP_RUNNING:-0}"
 CF_DRY_RUN=0
+CF_LOCK_TIMEOUT="${CODEFX_LOCK_TIMEOUT:-120}"
 CF_DAEMON_POLICY="${CODEFX_DAEMON_POLICY:-auto}"
 CF_TIMEOUT="${CODEFX_PROCESS_TIMEOUT:-30}"
 cf_prepared=0
@@ -133,14 +134,15 @@ EOF
 download_file() {
   url="$1"
   output="$2"
+  case "$url" in https://*) ;; *) echo 'Downloads require HTTPS.' >&2; return 1 ;; esac
 
   if command -v curl >/dev/null 2>&1; then
     case "$url" in
       "$RELEASES_BASE_URL"/*)
-        curl -fsSL --connect-timeout "$RELEASES_CONNECT_TIMEOUT" --max-time "$RELEASES_ASSET_TIMEOUT" "$url" -o "$output"
+        curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout "$RELEASES_CONNECT_TIMEOUT" --max-time "$RELEASES_ASSET_TIMEOUT" "$url" -o "$output"
         ;;
       *)
-        curl -fsSL --retry 3 --connect-timeout 10 --max-time "$RELEASES_ASSET_TIMEOUT" "$url" -o "$output"
+        curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 10 --max-time "$RELEASES_ASSET_TIMEOUT" "$url" -o "$output"
         ;;
     esac
     return
@@ -149,10 +151,10 @@ download_file() {
   if command -v wget >/dev/null 2>&1; then
     case "$url" in
       "$RELEASES_BASE_URL"/*)
-        wget -q -t 1 -T "$RELEASES_ASSET_TIMEOUT" -O "$output" "$url"
+        wget -q --https-only -t 1 -T "$RELEASES_ASSET_TIMEOUT" -O "$output" "$url"
         ;;
       *)
-        wget -q -t 3 -T "$RELEASES_ASSET_TIMEOUT" -O "$output" "$url"
+        wget -q --https-only -t 3 -T "$RELEASES_ASSET_TIMEOUT" -O "$output" "$url"
         ;;
     esac
     return
@@ -164,14 +166,15 @@ download_file() {
 
 download_text() {
   url="$1"
+  case "$url" in https://*) ;; *) echo 'Downloads require HTTPS.' >&2; return 1 ;; esac
 
   if command -v curl >/dev/null 2>&1; then
     case "$url" in
       "$RELEASES_BASE_URL"/*)
-        curl -fsSL --connect-timeout "$RELEASES_CONNECT_TIMEOUT" --max-time "$RELEASES_METADATA_TIMEOUT" "$url"
+        curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout "$RELEASES_CONNECT_TIMEOUT" --max-time "$RELEASES_METADATA_TIMEOUT" "$url"
         ;;
       *)
-        curl -fsSL --retry 3 --connect-timeout 10 --max-time "$RELEASES_METADATA_TIMEOUT" "$url"
+        curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 10 --max-time "$RELEASES_METADATA_TIMEOUT" "$url"
         ;;
     esac
     return
@@ -180,10 +183,10 @@ download_text() {
   if command -v wget >/dev/null 2>&1; then
     case "$url" in
       "$RELEASES_BASE_URL"/*)
-        wget -q -t 1 -T "$RELEASES_METADATA_TIMEOUT" -O - "$url"
+        wget -q --https-only -t 1 -T "$RELEASES_METADATA_TIMEOUT" -O - "$url"
         ;;
       *)
-        wget -q -t 3 -T "$RELEASES_METADATA_TIMEOUT" -O - "$url"
+        wget -q --https-only -t 3 -T "$RELEASES_METADATA_TIMEOUT" -O - "$url"
         ;;
     esac
     return
@@ -654,11 +657,14 @@ append_path_block() {
   end_marker="$3"
   path_line="$4"
 
+  tmp_profile="$(dirname "$profile")/.codefx-profile.$$"
+  if [ -f "$profile" ]; then cp -p "$profile" "$tmp_profile"; else : > "$tmp_profile"; fi
   {
     printf '\n%s\n' "$begin_marker"
     printf '%s\n' "$path_line"
     printf '%s\n' "$end_marker"
-  } >>"$profile"
+  } >>"$tmp_profile"
+  mv -f "$tmp_profile" "$profile"
 }
 
 rewrite_path_block() {
@@ -666,7 +672,8 @@ rewrite_path_block() {
   begin_marker="$2"
   end_marker="$3"
   path_line="$4"
-  tmp_profile="$tmp_dir/profile.$$.tmp"
+  tmp_profile="$(dirname "$profile")/.codefx-profile.$$"
+  cp -p "$profile" "$tmp_profile"
 
   awk -v begin="$begin_marker" -v end="$end_marker" -v line="$path_line" '
     BEGIN {
@@ -714,9 +721,10 @@ mkdir_lock_is_stale() {
       ;;
   esac
 
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    return 1
-  fi
+  case "$pid" in
+    ''|*[!0-9]*) ;;
+    *) if kill -0 "$pid" 2>/dev/null; then return 1; else return 0; fi ;;
+  esac
 
   if [ "$started_at" -eq 0 ] || [ "$now" -eq 0 ]; then
     return 0
@@ -728,14 +736,14 @@ mkdir_lock_is_stale() {
 acquire_install_lock() {
   mkdir -p "$STANDALONE_ROOT"
 
-  if command -v flock >/dev/null 2>&1; then
+  if command -v flock >/dev/null 2>&1 && flock --help 2>&1 | grep -q -- '-w'; then
     exec 9>"$LOCK_FILE"
-    flock -w 120 9
+    flock -w "$CF_LOCK_TIMEOUT" 9
     lock_kind="flock"
     return
   fi
 
-  lock_deadline=$(( $(date +%s) + 120 ))
+  lock_deadline=$(( $(date +%s) + CF_LOCK_TIMEOUT ))
   while ! mkdir "$LOCK_DIR" 2>/dev/null; do
     if mkdir_lock_is_stale; then
       warn "Removing stale installer lock at $LOCK_DIR"
@@ -1315,12 +1323,50 @@ cf_inventory() (
   done
 )
 
+cf_proc_inventory() (
+  cf_root=$1
+  [ -r "$cf_root/$$/stat" ] || return 1
+  cf_uid=$(id -u)
+  : > "$tmp_dir/processes"
+  for cf_proc in "$cf_root"/[0-9]*; do
+    [ -r "$cf_proc/status" ] && [ -r "$cf_proc/stat" ] || continue
+    cf_owner=$(awk '/^Uid:/ { print $2; exit }' "$cf_proc/status") || continue
+    [ "$cf_owner" = "$cf_uid" ] || continue
+    cf_stat=$(cat "$cf_proc/stat") || continue
+    cf_tail=${cf_stat##*) }
+    cf_state=${cf_tail%% *}; cf_tail=${cf_tail#* }; cf_parent=${cf_tail%% *}
+    cf_name=${cf_stat#*(}; cf_name=${cf_name%)*}
+    printf '%s %s %s %s\n' "${cf_proc##*/}" "$cf_parent" "$cf_state" "$cf_name" >> "$tmp_dir/processes"
+  done
+)
+
+cf_fingerprint() (
+  if [ "$os" = linux ] && [ -r "/proc/$1/stat" ]; then
+    cf_stat=$(cat "/proc/$1/stat") || return 1
+    cf_tail=${cf_stat##*) }
+    # state is field 3; process start ticks are field 22.
+    cf_start=$(printf '%s\n' "$cf_tail" | awk '{print $20}')
+    [ -n "$cf_start" ] || return 1
+    cf_name=${cf_stat#*(}; cf_name=${cf_name%)*}
+    printf '%s %s\n' "$cf_start" "$cf_name"
+  else
+    ps -p "$1" -o lstart= -o comm=
+  fi
+)
+
 cf_processes() (
   # ps failure is an error, rather than evidence that no process exists.
-  ps -u "$(id -u)" -o pid= -o ppid= -o stat= -o comm= > "$tmp_dir/processes" || {
-    echo 'Cannot inspect running processes; installation was stopped safely.' >&2; return 1;
-  }
-  awk '$3 !~ /^Z/ && $4 ~ /(^|\/)(codex|codefx)(\.exe)?$/ { print $1, $2, $4 }' "$tmp_dir/processes"
+  if ! ps -u "$(id -u)" -ww -o pid= -o ppid= -o stat= -o comm= > "$tmp_dir/processes" 2> "$tmp_dir/process-error"; then
+    if [ "$os" != linux ] || ! cf_proc_inventory /proc; then
+      echo 'Cannot inspect running processes; installation was stopped safely.' >&2; return 1
+    fi
+  fi
+  awk '{
+    pid=$1; parent=$2; state=$3
+    $1=$2=$3=""; sub(/^[[:space:]]+/, "")
+    name=$0; sub(/^.*\//, "", name)
+    if (state !~ /^Z/ && name ~ /^(codex|codefx)([-_.][A-Za-z0-9_.-]+)?$/) print pid, parent, $0
+  }' "$tmp_dir/processes"
 )
 
 cf_prepare() {
@@ -1346,6 +1392,13 @@ cf_prepare() {
       done
     fi
   fi
+  if ! cf_guarded && [ "$CF_STOP_RUNNING" = 1 ]; then
+    while read -r cf_pid cf_ppid cf_name; do
+      cf_fingerprint "$cf_pid" > "$tmp_dir/process.$cf_pid" 2>/dev/null || {
+        echo 'A process changed during inspection; rerun the installer.' >&2; return 1;
+      }
+    done < "$tmp_dir/active-codex"
+  fi
   cf_tx="$STANDALONE_ROOT/.transaction"
   mkdir -m 700 "$cf_tx"
   cf_snapshot "$CURRENT_LINK" current
@@ -1356,10 +1409,12 @@ cf_prepare() {
     cf_snapshot "$CODE_MODE_HOST_BIN_PATH" host
     cf_snapshot "$(cf_resolve_path "$(pick_profile)")" profile
   fi
-  cf_snapshot "$CODEX_HOME_DIR/packages/app-server-daemon/current" daemon-current
-  cf_snapshot "$CODEX_HOME_DIR/packages/app-server-daemon/auto-update-version" daemon-channel
-  cf_snapshot "$CODEX_HOME_DIR/packages/app-server-daemon/selection-history" daemon-history
-  cf_snapshot "$CODEX_HOME_DIR/app-server-daemon/settings.json" daemon-settings
+  if ! cf_guarded && [ "$CF_DAEMON_POLICY" != keep ]; then
+    cf_snapshot "$CODEX_HOME_DIR/packages/app-server-daemon/current" daemon-current
+    cf_snapshot "$CODEX_HOME_DIR/packages/app-server-daemon/auto-update-version" daemon-channel
+    cf_snapshot "$CODEX_HOME_DIR/packages/app-server-daemon/selection-history" daemon-history
+    cf_snapshot "$CODEX_HOME_DIR/app-server-daemon/settings.json" daemon-settings
+  fi
   if ! cf_guarded; then
     cf_old_cli=$(resolve_existing_codex)
     if [ -n "$cf_old_cli" ] && [ "$CF_DAEMON_POLICY" != keep ] &&
@@ -1379,8 +1434,9 @@ cf_prepare() {
     if [ -s "$tmp_dir/active-codex" ]; then
       while read -r cf_pid cf_ppid cf_name; do
         # Recheck identity before signalling. Never escalate to SIGKILL.
-        cf_now=$(ps -p "$cf_pid" -o ppid= -o comm= 2>/dev/null | awk '{$1=$1;print}')
-        if [ "$cf_now" = "$cf_ppid $cf_name" ]; then kill -TERM "$cf_pid" 2>/dev/null || true; fi
+        cf_now=$(cf_fingerprint "$cf_pid" 2>/dev/null) || cf_now=''
+        cf_before=$(cat "$tmp_dir/process.$cf_pid")
+        if [ -n "$cf_before" ] && [ "$cf_now" = "$cf_before" ]; then kill -TERM "$cf_pid" 2>/dev/null || true; fi
       done < "$tmp_dir/active-codex"
       cf_deadline=$(( $(date +%s) + CF_TIMEOUT ))
       while :; do
@@ -1489,12 +1545,17 @@ cf_finish() {
 }
 
 parse_args "$@"
+case "$CF_LOCK_TIMEOUT" in ''|*[!0-9]*) echo 'Invalid lock timeout.' >&2; exit 2 ;; esac
+[ "$CF_LOCK_TIMEOUT" -ge 1 ] && [ "$CF_LOCK_TIMEOUT" -le 600 ] || { echo 'Lock timeout must be 1..600.' >&2; exit 2; }
 case "$CF_TIMEOUT" in ''|*[!0-9]*) echo 'Invalid process timeout.' >&2; exit 2 ;; esac
 [ "$CF_TIMEOUT" -ge 1 ] && [ "$CF_TIMEOUT" -le 300 ] || { echo 'Process timeout must be 1..300.' >&2; exit 2; }
 case "$CF_DAEMON_POLICY" in auto|keep) ;; *) echo 'Invalid daemon policy.' >&2; exit 2 ;; esac
 # Shell profile entries use double quotes; reject characters interpreted there.
+case "$CODEX_HOME_DIR" in /*) ;; *) echo 'CODEX_HOME must be absolute.' >&2; exit 2 ;; esac
+case "$CODEX_HOME_DIR$HOME" in *'
+'*) echo 'Home paths must not contain newlines.' >&2; exit 2 ;; esac
 case "$BIN_DIR" in /*) ;; *) echo 'CODEX_INSTALL_DIR must be absolute.' >&2; exit 2 ;; esac
-case "$BIN_DIR" in *'"'*|*'$'*|*'`'*|*'\'*|*'
+case "$BIN_DIR" in *':'*|*'"'*|*'$'*|*'`'*|*'\'*|*'
 '*) echo 'Install path contains unsupported shell metacharacters.' >&2; exit 2 ;; esac
 
 
@@ -1592,6 +1653,7 @@ cleanup() {
     fi
   fi
   release_install_lock
+  if [ -n "${tmp_profile:-}" ]; then rm -f "$tmp_profile"; fi
   if [ -n "$tmp_dir" ]; then
     rm -rf "$tmp_dir"
   fi
