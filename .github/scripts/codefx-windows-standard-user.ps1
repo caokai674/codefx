@@ -89,7 +89,9 @@ exit $result
     $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $root 'launch.ps1') + '" "' + $root + '" "' + $scriptName + '"'
     # Task Scheduler creates the test process independently of the Actions
     # runner's job, while retaining a normal user token and default protections.
-    $action = New-ScheduledTaskAction -Execute $executable -Argument $arguments -WorkingDirectory $root
+    $hostOutput = Join-Path $root 'host-stdout.log'; $hostError = Join-Path $root 'host-stderr.log'
+    $hostArguments = '/d /s /c ""' + $executable + '" ' + $arguments + ' >"' + $hostOutput + '" 2>"' + $hostError + '""'
+    $action = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\cmd.exe') -Argument $hostArguments -WorkingDirectory $root
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 12)
     $settings.Enabled = $true; $settings.AllowDemandStart = $true
     $null = Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -User "$env:COMPUTERNAME\$user" -Password $password -RunLevel Limited -Force
@@ -107,7 +109,9 @@ exit $result
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $completion = Join-Path $root 'exitcode.txt'
     while (-not (Test-Path -LiteralPath $completion)) {
-        $runningTask.Refresh()
+        try { $runningTask.Refresh() } catch { # A completed instance has no live COM state.
+            Write-Verbose $_
+        }
         $info = Get-ScheduledTaskInfo -TaskName $taskName
         if ($watch.Elapsed.TotalSeconds -ge 600 -or
             ($watch.Elapsed.TotalSeconds -gt 15 -and $info.LastRunTime -ge $launchedAt -and (Get-ScheduledTask -TaskName $taskName).State -eq 'Ready') -or
@@ -126,7 +130,7 @@ exit $result
         Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
     }
-    foreach ($file in @('stdout.log','stderr.log')) {
+    foreach ($file in @('stdout.log','stderr.log','host-stdout.log','host-stderr.log')) {
         $log = Join-Path $root $file
         if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log | ForEach-Object { Write-Host $_ } }
     }
