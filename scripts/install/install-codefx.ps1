@@ -41,7 +41,7 @@ try {
     $installer = Join-Path $tmpRoot 'install.ps1'
     Get-CodefxBootstrapFile $url $installer
     $env:CODEFX_GITHUB_REPO = $repo
-    if (-not $env:CODEX_NON_INTERACTIVE) { $env:CODEX_NON_INTERACTIVE = '1' }
+    if (-not $env:CODEX_NON_INTERACTIVE) { $env:CODEX_NON_INTERACTIVE = 'false' }
     if (-not $env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM) { $env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM = 'false' }
     $engine = Join-Path $PSHOME 'pwsh.exe'
     if (-not (Test-Path -LiteralPath $engine)) { $engine = Join-Path $PSHOME 'powershell.exe' }
