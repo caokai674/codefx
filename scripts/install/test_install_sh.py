@@ -21,6 +21,93 @@ MISMATCH_VERSION = "0.145.0"
 
 
 class InstallShTest(unittest.TestCase):
+    def test_active_codex_defaults_to_preserve_and_aborts_before_archive_download(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            old, _ = create_official_install(root)
+            process = subprocess.Popen(["sleep", "60"])
+            try:
+                result, requests = run_installer_in(
+                    root, VERSION, replacement_wrapper=True,
+                    extra_env={"CODEFX_TEST_ACTIVE_PID": str(process.pid)},
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("Codex was left running", result.stderr)
+                self.assertTrue(all(not url.endswith((".tar.gz", ".tgz")) for url in requests), requests)
+                self.assertIsNone(process.poll(), "Declining termination must preserve running sessions")
+                self.assertTrue(old.is_file(), "Original codex must be retained")
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                process.wait(timeout=5)
+
+    def test_interactive_confirmation_terminates_existing_codex_and_installs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive, checksum, metadata = create_package_release(
+                root, target="x86_64-unknown-linux-musl"
+            )
+            process = subprocess.Popen(["sleep", "60"])
+            try:
+                result, _ = run_installer_in(
+                    root, VERSION, metadata_json=metadata,
+                    archive_path=archive, checksum_path=checksum,
+                    tty_response="y\nn\n",
+                    extra_env={
+                        "CODEFX_TEST_ACTIVE_PID": str(process.pid),
+                        "CODEX_NON_INTERACTIVE": "false",
+                    },
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("installed successfully", result.stdout)
+                self.assertIsNotNone(process.poll(), "Approved process was not terminated")
+                self.assertEqual(
+                    subprocess.check_output(
+                        [str(root / "install-bin/codex"), "--version"], text=True
+                    ).strip(), f"codefx {VERSION}"
+                )
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                process.wait(timeout=5)
+
+    def test_defer_until_idle_times_out_without_downloading_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            process = subprocess.Popen(["sleep", "60"])
+            try:
+                result, requests = run_installer_in(
+                    root, VERSION, arguments=("--defer-until-idle",),
+                    extra_env={
+                        "CODEFX_TEST_ACTIVE_PID": str(process.pid),
+                        "CODEFX_IDLE_WAIT_TIMEOUT": "1",
+                    },
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("still running", result.stderr)
+                self.assertTrue(all(not url.endswith((".tar.gz", ".tgz")) for url in requests))
+                self.assertIsNone(process.poll())
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                process.wait(timeout=5)
+
+    def test_inventory_deduplicates_physical_path_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            old, _ = create_official_install(root)
+            alias = root / "bin-alias"
+            alias.symlink_to(old.parent, target_is_directory=True)
+            result, _ = run_installer_in(
+                root, VERSION, arguments=("--dry-run",),
+                extra_env={
+                    "PATH": f"{old.parent}:{alias}:{old.parent}:/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.count(f"{old.parent}/codex [native]"), 1)
+            self.assertNotIn(f"{alias}/codex [native]", result.stdout)
+
     def test_replacement_failure_preserves_existing_command(self) -> None:
         for failure in ("metadata", "missing_assets", "missing_download", "checksum", "archive", "version", "identity"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp:
@@ -1034,6 +1121,7 @@ def run_installer_in(
     replacement_wrapper: bool = False,
     arguments: tuple[str, ...] = (),
     extra_env: dict[str, str] | None = None,
+    tty_response: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     bin_dir = root / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -1172,7 +1260,7 @@ def run_installer_in(
     home.mkdir(exist_ok=True)
     fixture_ps = bin_dir / "ps"
     prior_ps = fixture_ps.read_text() if fixture_ps.exists() else "#!/bin/sh\nexec /bin/ps \"$@\"\n"
-    fixture_ps.write_text(prior_ps.replace("#!/bin/sh\n", '#!/bin/sh\nif [ "${1:-}" = -u ]; then exit 0; fi\n', 1))
+    fixture_ps.write_text(prior_ps.replace("#!/bin/sh\n", "#!/bin/sh\nif [ \"${1:-}\" = -u ]; then\n  if [ -n \"${CODEFX_TEST_ACTIVE_PID:-}\" ]; then\n    cf_state=$(/bin/ps -p \"$CODEFX_TEST_ACTIVE_PID\" -o stat= 2>/dev/null || true)\n    case \"$cf_state\" in\n      \"\"|*Z*) ;;\n      *) printf '%s %s S codex\\n' \"$CODEFX_TEST_ACTIVE_PID\" \"${CODEFX_TEST_ACTIVE_PARENT:-1}\" ;;\n    esac\n  fi\n  exit 0\nfi\n", 1))
     fixture_ps.chmod(0o755)
     env = os.environ.copy()
     env.update(
@@ -1226,13 +1314,25 @@ def run_installer_in(
             "TRUE" if use_mirror else "false"
         )
     env.update(extra_env or {})
-    result = subprocess.run(
-        ["/bin/sh", str(INSTALL_SCRIPT.with_name("install-codefx.sh") if replacement_wrapper else INSTALL_SCRIPT), *arguments],
-        capture_output=True,
-        check=False,
-        env=env,
-        text=True,
-    )
+    master_fd = slave_fd = None
+    try:
+        if tty_response is not None:
+            master_fd, slave_fd = os.openpty()
+            os.write(master_fd, tty_response.encode("utf-8"))
+        result = subprocess.run(
+            ["/bin/sh", str(INSTALL_SCRIPT.with_name("install-codefx.sh") if replacement_wrapper else INSTALL_SCRIPT), *arguments],
+            capture_output=True,
+            check=False,
+            env=env,
+            stdin=slave_fd,
+            text=True,
+            timeout=120,
+        )
+    finally:
+        if master_fd is not None:
+            os.close(master_fd)
+        if slave_fd is not None:
+            os.close(slave_fd)
     requests = (
         request_log.read_text(encoding="utf-8").splitlines()
         if request_log.exists()

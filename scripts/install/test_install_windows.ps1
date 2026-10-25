@@ -95,7 +95,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
     function bun { $fixture.ManagerCalls++; throw 'Unexpected package-manager mutation.' }
     function vp { $fixture.ManagerCalls++; throw 'Unexpected package-manager mutation.' }
 
-    foreach ($case in @('success','checksum','target','active','dry-run','visible','daemon','repeat','guarded','daemon-running','active-timeout','committed-recovery','interrupted-recovery','cache-rollback','flat-native','flat-rollback','empty-native','empty-rollback','unknown-native','sidecar','daemon-managed-only','ancestry-cycle','ancestry-newer')) {
+    foreach ($case in @('success','checksum','target','active','active-idle-timeout','dry-run','visible','daemon','repeat','guarded','daemon-running','active-timeout','committed-recovery','interrupted-recovery','cache-rollback','flat-native','flat-rollback','empty-native','empty-rollback','unknown-native','sidecar','daemon-managed-only','ancestry-cycle','ancestry-newer')) {
         Write-Host "Native Windows case: $case"
         $caseRoot = Join-Path $root $case
         $package = Join-Path $caseRoot 'package'
@@ -119,7 +119,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
             $fixture.Metadata.assets[1].name = "$target.sha256"
             $fixture.Metadata.assets[1].browser_download_url = "https://fixture.invalid/$target.sha256"
         }
-        $fixture.Active = $case -in @('active','active-timeout','ancestry-cycle','ancestry-newer'); $fixture.BadHash = $case -eq 'checksum'; $fixture.FailCache = $case -eq 'cache-rollback'
+        $fixture.Active = $case -in @('active','active-idle-timeout','active-timeout','ancestry-cycle','ancestry-newer'); $fixture.BadHash = $case -eq 'checksum'; $fixture.FailCache = $case -eq 'cache-rollback'
         $env:CODEX_HOME = Join-Path $caseRoot 'home'
         $env:CODEX_INSTALL_DIR = Join-Path $caseRoot 'visible bin'
         $env:CODEX_NON_INTERACTIVE = '1'
@@ -169,8 +169,10 @@ exit /b 1
             $env:Path = "$env:SystemRoot\System32;$env:SystemRoot;$PSHOME"
         }
         $failed = $false
+        $downloadsBeforeCase = $fixture.Downloads
         try {
-            if ($case -in @('active-timeout','ancestry-cycle','ancestry-newer')) { & $base -Release '0.164.0' -StopRunning -ProcessTimeout 2 }
+            if ($case -eq 'active-idle-timeout') { & $base -Release '0.164.0' -DeferUntilIdle -IdleWaitTimeout 1 -ProcessTimeout 3 }
+            elseif ($case -in @('active-timeout','ancestry-cycle','ancestry-newer')) { & $base -Release '0.164.0' -StopRunning -ProcessTimeout 2 }
             elseif ($case -in @('daemon-running','daemon-managed-only')) { & $base -Release '0.164.0' -StopRunning -ProcessTimeout 10 }
             elseif ($case -eq 'dry-run') { & $base -Release '0.164.0' -DryRun }
             else { & $base -Release '0.164.0' -ProcessTimeout 3 }
@@ -180,8 +182,11 @@ exit /b 1
             if ($case -eq 'ancestry-newer' -and $_.Exception.Message -notmatch 'Timed out waiting for Codex') { throw }
             Write-Host "Expected failure if negative case: $_"
         }
-        $negative = $case -in @('checksum','target','active','active-timeout','ancestry-cycle','ancestry-newer','visible','daemon','cache-rollback','flat-rollback','empty-rollback','unknown-native')
+        $negative = $case -in @('checksum','target','active','active-idle-timeout','active-timeout','ancestry-cycle','ancestry-newer','visible','daemon','cache-rollback','flat-rollback','empty-rollback','unknown-native')
         if ($failed -ne $negative) { throw "Unexpected installer result for $case (failed=$failed)." }
+        if ($case -in @('active','active-idle-timeout','ancestry-cycle') -and $fixture.Downloads -ne $downloadsBeforeCase) {
+            throw "Active session was detected too late (after downloads) in $case."
+        }
         if ($negative -or $case -eq 'dry-run') {
             if ([IO.File]::ReadAllText($cache) -cne $oldCache) { throw "Original version cache was not restored for $case." }
             if ($case -eq 'empty-rollback') {
