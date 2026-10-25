@@ -13,7 +13,7 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ### Installation temporarily paused
 
-**Do not run the one-command replacement installers yet.** Release 0.164.0 currently has no binary assets. The previous wrapper could remove an official installation before attempting a download. Replacement wrappers now delegate to the base installer, which downloads and verifies the package and checks the staged Codefx executable before replacing an existing installation. Missing assets cause installation to stop with the existing command preserved. Installation remains paused until release assets and end-to-end checks are complete.
+**Do not run the one-command replacement installers yet.** Release 0.164.0 now includes a verified Linux x86_64 package and SHA-256 checksums; packages for other supported platforms are still incomplete. The previous wrapper could remove an official installation before attempting a download. Replacement wrappers now delegate to the base installer, which downloads and verifies the package and checks the staged Codefx executable before replacing an existing installation. Missing assets cause installation to stop with the existing command preserved. Installation remains paused until release assets and end-to-end checks are complete.
 
 Keep your existing Codex installation. Installation will be documented again after platform packages and checksums are published and verified in the [Codefx Release](https://github.com/hitmux/codefx/releases/tag/rust-v0.164.0).
 
