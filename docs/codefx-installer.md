@@ -83,6 +83,6 @@ Rust 自动更新器会传递 `CODEX_INSTALL_IF_LATEST`、`CODEX_INSTALL_IF_CURR
 
 ## 自动更新来源与验证范围
 
-Codefx CLI 的更新检查和更新入口指向 `hitmux/codefx` 的正式 Release。独立 daemon 迁移后使用 Codefx 包；保留的其他安装按各自管理器的设置更新。
+首次迁移会清理沿用的官方版本检查缓存，原缓存随事务备份保留；后续同源更新保留新的缓存与忽略版本设置。Codefx CLI 的更新检查和更新入口指向 `hitmux/codefx` 的正式 Release。独立 daemon 迁移后使用 Codefx 包；保留的其他安装按各自管理器的设置更新。
 
 专用 CI 在 Linux、macOS 和 Windows 的原生 runner 上执行安装器回归检查。Windows 使用真实 PE 可执行文件、tar 包和 junction，并分别运行 PowerShell 5.1 与 7。发布工作流为三系统、两架构生成包，在对应原生 runner 上执行版本与资源检查，所有平台验证完成后才汇总全局校验清单。

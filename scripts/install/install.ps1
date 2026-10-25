@@ -1076,7 +1076,13 @@ function Start-CodefxTransaction {
     Save-CodefxJournal
     Save-CodefxPath $currentDir current
     Save-CodefxPath $autoUpdateVersion channel
-    if (-not $daemonOnly) { Save-CodefxPath $visibleBinDir visible }
+    if (-not $daemonOnly) {
+        Save-CodefxPath $visibleBinDir visible
+        if (-not (Test-CodefxGuardedUpdate)) {
+            Save-CodefxPath (Join-Path $codexHome 'version.json') version-cache
+            Save-CodefxPath (Join-Path $standaloneRoot 'codefx-update-source') update-source
+        }
+    }
     Save-CodefxPath (Join-Path $standaloneRoot 'selection-history') history
     if (-not (Test-CodefxGuardedUpdate) -and -not $KeepDaemon) {
         Save-CodefxPath (Join-Path $codexHome 'packages\app-server-daemon\current') daemon-current
@@ -1165,6 +1171,19 @@ function Undo-CodefxTransaction {
     [Environment]::SetEnvironmentVariable('Path', $script:Cf.UserPath, 'User')
     $env:Path = $script:Cf.ProcessPath
     if ($script:Cf.RestartCli) { $null = Invoke-CodefxBounded $script:Cf.RestartCli @('app-server','daemon','start') }
+}
+
+function Update-CodefxVersionCache {
+    if (Test-CodefxGuardedUpdate) { return }
+    $source = Join-Path $standaloneRoot 'codefx-update-source'
+    $oldSource = if (Test-Path -LiteralPath $source) { [IO.File]::ReadAllText($source).Trim() } else { '' }
+    if ($oldSource -cne $CodefxGithubRepo) {
+        $cache = Join-Path $codexHome 'version.json'
+        if (Test-Path -LiteralPath $cache) { Remove-Item -LiteralPath $cache -Force }
+        $nextSource = Join-Path $script:Cf.Root 'codefx-update-source.next'
+        [IO.File]::WriteAllText($nextSource, $CodefxGithubRepo)
+        Move-Item -LiteralPath $nextSource -Destination $source -Force
+    }
 }
 
 function Update-CodefxDaemon {
@@ -1593,6 +1612,7 @@ Write-Step "Future PowerShell windows: open a new PowerShell window and run: cod
 Write-Host "Codefx CLI $resolvedVersion installed successfully."
 
         Test-VisibleCodexCommand -VisibleBinDir $visibleBinDir
+        Update-CodefxVersionCache
     }
 } finally {
     Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue

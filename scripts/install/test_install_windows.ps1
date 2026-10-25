@@ -48,7 +48,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
 '@ | Set-Content -LiteralPath $archiveWriter -Encoding ASCII
     $target = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
     $asset = "codex-package-$target.tar.gz"
-    $fixture = @{ Metadata = $null; Archive = $null; Sums = $null; Active = $false; BadHash = $false; ManagerCalls = 0; Downloads = 0 }
+    $fixture = @{ Metadata = $null; Archive = $null; Sums = $null; Active = $false; BadHash = $false; ManagerCalls = 0; Downloads = 0; FailCache = $false }
     function Invoke-RestMethod { param([string]$Uri, [int]$TimeoutSec) return $fixture.Metadata }
     function Invoke-WebRequest {
         param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile, [int]$TimeoutSec)
@@ -58,6 +58,11 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
             Copy-Item -LiteralPath $fixture.Archive -Destination $OutFile
             if ($fixture.BadHash) { Add-Content -LiteralPath $OutFile -Value 'corruption' }
         }
+    }
+    function Move-Item {
+        param([string]$LiteralPath, [string]$Destination, [switch]$Force, [object]$ErrorAction)
+        if ($fixture.FailCache -and $LiteralPath.EndsWith('codefx-update-source.next')) { throw 'Mock update-source commit failure.' }
+        Microsoft.PowerShell.Management\Move-Item @PSBoundParameters
     }
     function Get-CimInstance {
         param([string]$ClassName, [string]$Filter, [object]$ErrorAction)
@@ -70,7 +75,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
     function bun { $fixture.ManagerCalls++; throw 'Unexpected package-manager mutation.' }
     function vp { $fixture.ManagerCalls++; throw 'Unexpected package-manager mutation.' }
 
-    foreach ($case in @('success','checksum','target','active','dry-run','visible','daemon','repeat','guarded','daemon-running','active-timeout','committed-recovery','interrupted-recovery')) {
+    foreach ($case in @('success','checksum','target','active','dry-run','visible','daemon','repeat','guarded','daemon-running','active-timeout','committed-recovery','interrupted-recovery','cache-rollback')) {
         Write-Host "Native Windows case: $case"
         $caseRoot = Join-Path $root $case
         $package = Join-Path $caseRoot 'package'
@@ -90,7 +95,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
             @{ name=$asset; digest=('sha256:' + (Get-FileHash $fixture.Archive).Hash.ToLowerInvariant()); browser_download_url="https://fixture.invalid/$asset" },
             @{ name='codex-package_SHA256SUMS'; digest=('sha256:' + (Get-FileHash $fixture.Sums).Hash.ToLowerInvariant()); browser_download_url='https://fixture.invalid/codex-package_SHA256SUMS' }
         ) }
-        $fixture.Active = $case -in @('active','active-timeout'); $fixture.BadHash = $case -eq 'checksum'
+        $fixture.Active = $case -in @('active','active-timeout'); $fixture.BadHash = $case -eq 'checksum'; $fixture.FailCache = $case -eq 'cache-rollback'
         $env:CODEX_HOME = Join-Path $caseRoot 'home'
         $env:CODEX_INSTALL_DIR = Join-Path $caseRoot 'visible bin'
         $env:CODEX_NON_INTERACTIVE = '1'
@@ -103,7 +108,10 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
         New-Item -ItemType Junction -Path (Join-Path $standalone 'current') -Target $release | Out-Null
         New-Item -ItemType Junction -Path $env:CODEX_INSTALL_DIR -Target (Join-Path $standalone 'current\bin') | Out-Null
         $oldHash = (Get-FileHash (Join-Path $release 'bin\codex.exe')).Hash
-        if ($case -in @('daemon','daemon-running','active-timeout','committed-recovery','interrupted-recovery')) {
+        $cache = Join-Path $env:CODEX_HOME 'version.json'
+        $oldCache = '{"latest_version":"999.0.0","dismissed_version":"999.0.0"}'
+        [IO.File]::WriteAllText($cache, $oldCache)
+        if ($case -in @('daemon','daemon-running','active-timeout','committed-recovery','interrupted-recovery','cache-rollback')) {
             New-Item -ItemType Directory -Force -Path (Join-Path $env:CODEX_HOME 'app-server-daemon') | Out-Null
             '{}' | Set-Content -LiteralPath (Join-Path $env:CODEX_HOME 'app-server-daemon\settings.json')
         }
@@ -127,15 +135,21 @@ exit /b 1
             elseif ($case -eq 'dry-run') { & $base -Release '0.164.0' -DryRun }
             else { & $base -Release '0.164.0' -ProcessTimeout 3 }
         } catch { $failed = $true; Write-Host "Expected failure if negative case: $_" }
-        $negative = $case -in @('checksum','target','active','active-timeout','visible','daemon')
+        $negative = $case -in @('checksum','target','active','active-timeout','visible','daemon','cache-rollback')
         if ($failed -ne $negative) { throw "Unexpected installer result for $case (failed=$failed)." }
         if ($negative -or $case -eq 'dry-run') {
+            if ([IO.File]::ReadAllText($cache) -cne $oldCache) { throw "Original version cache was not restored for $case." }
             if ((Get-FileHash (Join-Path $env:CODEX_INSTALL_DIR 'codex.exe')).Hash -ne $oldHash) { throw "Original installation was not restored for $case." }
         } else {
+            if (Test-Path -LiteralPath $cache) { throw "Official version cache was retained for $case." }
             $output = & (Join-Path $env:CODEX_INSTALL_DIR 'codex.exe') --version
             if ($output -ne 'codefx 0.164.0') { throw "New entrypoint failed for $case." }
-            if ($case -eq 'repeat') { & $base -Release '0.164.0' -ProcessTimeout 3 }
-            if ($case -in @('committed-recovery','interrupted-recovery')) {
+            if ($case -eq 'repeat') {
+                [IO.File]::WriteAllText($cache, '{"dismissed_version":"0.165.0"}')
+                & $base -Release '0.164.0' -ProcessTimeout 3
+                if ([IO.File]::ReadAllText($cache) -cne '{"dismissed_version":"0.165.0"}') { throw 'Same-source update lost version dismissals.' }
+            }
+            if ($case -in @('committed-recovery','interrupted-recovery','cache-rollback')) {
                 $receipt = Get-ChildItem -LiteralPath $standalone -Directory -Force -Filter '.rollback.*' | Select-Object -First 1
                 $journal = Join-Path $receipt.FullName 'journal.json'
                 if ($case -eq 'interrupted-recovery') {

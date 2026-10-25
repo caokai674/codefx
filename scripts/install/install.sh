@@ -1408,6 +1408,10 @@ cf_prepare() {
     cf_snapshot "$BIN_PATH" visible
     cf_snapshot "$CODE_MODE_HOST_BIN_PATH" host
     cf_snapshot "$(cf_resolve_path "$(pick_profile)")" profile
+    if ! cf_guarded; then
+      cf_snapshot "$CODEX_HOME_DIR/version.json" version-cache
+      cf_snapshot "$STANDALONE_ROOT/codefx-update-source" update-source
+    fi
   fi
   if ! cf_guarded && [ "$CF_DAEMON_POLICY" != keep ]; then
     cf_snapshot "$CODEX_HOME_DIR/packages/app-server-daemon/current" daemon-current
@@ -1517,6 +1521,18 @@ cf_restore() (
   fi
   [ "$cf_failed" = 0 ]
 )
+
+cf_migrate_update_cache() {
+  cf_guarded && return 0
+  cf_source="$STANDALONE_ROOT/codefx-update-source"
+  if [ "$(cat "$cf_source" 2>/dev/null || true)" != "$CODEFX_GITHUB_REPO" ]; then
+    # Official Codex and Codefx used the same cache filename. Do not show a
+    # cached upstream version as though it were a Codefx release after adoption.
+    rm -f "$CODEX_HOME_DIR/version.json"
+    printf '%s\n' "$CODEFX_GITHUB_REPO" > "$cf_tx/codefx-update-source.tmp"
+    mv -f "$cf_tx/codefx-update-source.tmp" "$cf_source"
+  fi
+}
 
 cf_migrate_daemon() {
   cf_guarded && return 0
@@ -1838,6 +1854,7 @@ update_visible_command "$release_dir"
 add_to_path
 verify_visible_command
 cf_migrate_daemon
+cf_migrate_update_cache
 cf_finish
 if ! prune_standalone_releases; then
   warn "Could not safely inspect old Codefx releases; skipped remaining cleanup."

@@ -114,6 +114,34 @@ exec /bin/ln "$@"
             self.assertIn('Recovering an interrupted', result.stderr)
             self.assertEqual(subprocess.check_output([str(visible), '--version'], text=True).strip(), f'codefx {VERSION}')
 
+    def test_official_version_cache_is_migrated_and_restored_on_failure(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve(); package = self.package(root)
+                old, visible, _ = self.old_install(root); before = old.read_bytes()
+                cache = root / 'codex-home/version.json'
+                cache.write_text('{"latest_version":"999.0.0","dismissed_version":"999.0.0"}')
+                original = cache.read_text()
+                if fail:
+                    (root / 'bin').mkdir()
+                    write_executable(root / 'bin/mv', f"""#!/bin/sh
+case "$*" in *codefx-update-source.tmp*) if [ ! -f '{root}/failed-cache-once' ]; then touch '{root}/failed-cache-once'; exit 73; fi ;; esac
+exec /bin/mv "$@"
+""")
+                result = self.run_install(root, package)
+                self.assertEqual(result.returncode == 0, not fail, result.stderr)
+                if fail:
+                    self.assertEqual(cache.read_text(), original)
+                    self.assertEqual(old.read_bytes(), before)
+                else:
+                    self.assertFalse(cache.exists())
+                    marker = root / 'codex-home/packages/standalone/codefx-update-source'
+                    self.assertEqual(marker.read_text().strip(), 'hitmux/codefx')
+                    cache.write_text('{"dismissed_version":"0.165.0"}')
+                    again = self.run_install(root, package)
+                    self.assertEqual(again.returncode, 0, again.stderr)
+                    self.assertEqual(cache.read_text(), '{"dismissed_version":"0.165.0"}')
+
     def test_committed_receipt_recovery_keeps_the_verified_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve(); package = self.package(root)
