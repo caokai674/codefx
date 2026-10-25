@@ -1,0 +1,157 @@
+name: Codefx native package
+on:
+  workflow_call:
+    inputs:
+      tag: {type: string, required: true}
+      target: {type: string, required: true}
+      runner: {type: string, required: true}
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 180
+    permissions: {contents: read, actions: read}
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    env:
+      TARGET: ${{ inputs.target }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      AWS_LC_SYS_NO_JITTER_ENTROPY: '1'
+      CODEX_REPO_ROOT: ${{ github.workspace }}
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with: {python-version: '3.12'}
+      - name: Preserve release helper and validate input
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          cp scripts/install/release_package.py "$RUNNER_TEMP/codefx-release-package.py"
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Prepare exact source and reuse published package where available
+        id: prepare
+        run: |
+          set -euo pipefail
+          python "$RUNNER_TEMP/codefx-release-package.py" normalize
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' codex-rs/Cargo.toml | head -1)"
+          [[ "$RELEASE_TAG" == "rust-v$version" ]]
+          mkdir -p dist
+          git diff -- codex-rs/Cargo.lock > "dist/codefx-lock-$TARGET.patch"
+          asset="codex-package-$TARGET.tar.gz"
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qxF "$asset"; then
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern codex-package_SHA256SUMS --dir dist
+            python -c 'from pathlib import Path; import hashlib,sys; p=Path("dist")/sys.argv[1]; h=hashlib.sha256(p.read_bytes()).hexdigest(); assert any(x.split()==[h,p.name] for x in Path("dist/codex-package_SHA256SUMS").read_text().splitlines())' "$asset"
+            rm dist/codex-package_SHA256SUMS
+            echo 'reuse=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'reuse=false' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8
+        if: steps.prepare.outputs.reuse != 'true'
+        with:
+          targets: ${{ inputs.target }}
+      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7
+        if: steps.prepare.outputs.reuse != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            codex-rs/target
+          key: codefx-native-${{ inputs.target }}-v1-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml') }}
+          restore-keys: codefx-native-${{ inputs.target }}-v1-
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        if: runner.os == 'Linux' && steps.prepare.outputs.reuse != 'true'
+        with: {version: 0.14.0, use-cache: false}
+      - name: Prepare Linux native dependencies
+        if: runner.os == 'Linux' && steps.prepare.outputs.reuse != 'true'
+        run: bash .github/scripts/install-musl-build-tools.sh
+      - uses: ./.github/actions/setup-rusty-v8
+        if: steps.prepare.outputs.reuse != 'true'
+        with:
+          target: ${{ inputs.target }}
+      - uses: ./.github/actions/setup-msvc-env
+        if: runner.os == 'Windows' && steps.prepare.outputs.reuse != 'true'
+        with:
+          target: ${{ inputs.target }}
+      - name: Build native binaries
+        if: steps.prepare.outputs.reuse != 'true'
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
+          bins=(--bin codex --bin codex-code-mode-host)
+          if [[ "$TARGET" == *linux* ]]; then
+            cargo build --locked --release --target "$TARGET" --bin bwrap
+            strip --strip-debug --strip-unneeded "target/$TARGET/release/bwrap"
+            export CODEX_BWRAP_SHA256="$(sha256sum "target/$TARGET/release/bwrap" | cut -d ' ' -f 1)"
+          elif [[ "$TARGET" == *windows* ]]; then
+            export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
+            bins+=(--bin codex-command-runner --bin codex-windows-sandbox-setup)
+          fi
+          export STABLE_GIT_COMMIT="$(git rev-parse HEAD)"
+          cargo build --locked --release --target "$TARGET" "${bins[@]}"
+          if [[ "$TARGET" == *apple* ]]; then
+            codesign --force --sign - "target/$TARGET/release/codex"
+            codesign --force --sign - "target/$TARGET/release/codex-code-mode-host"
+          fi
+      - name: Assemble platform package
+        if: steps.prepare.outputs.reuse != 'true'
+        run: |
+          set -euo pipefail
+          bash .github/scripts/build-codex-package-archive.sh --target "$TARGET" --bundle primary --entrypoint-dir "$PWD/codex-rs/target/$TARGET/release" --archive-dir "$PWD/dist"
+          rm -f dist/*.tar.zst
+      - name: Verify package on its native architecture
+        run: python "$RUNNER_TEMP/codefx-release-package.py" verify --target "$TARGET" --version "${RELEASE_TAG#rust-v}"
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: codefx-package-${{ inputs.target }}
+          path: dist/*
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions: {contents: write, actions: write}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      TARGET: ${{ inputs.target }}
+      ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: codefx-package-${{ inputs.target }}
+          path: dist
+      - name: Verify and publish this platform, then retire the transfer artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          file="codex-package-$TARGET.tar.gz"
+          actual="$(sha256sum "$file" | cut -d ' ' -f 1)"
+          expected="$(cat "$TARGET.sha256")"
+          [[ "$expected" == "$actual  $file" ]]
+          for asset in "$file" "$TARGET.sha256" "codefx-build-$TARGET.json" "codefx-lock-$TARGET.patch"; do
+            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qxF "$asset"; then
+              digest="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets[] | [.name,.digest] | @tsv' | awk -F '\t' -v name="$asset" '$1 == name {print $2}')"
+              [[ "$digest" == "sha256:$(sha256sum "$asset" | cut -d ' ' -f 1)" ]]
+            else
+              gh release upload "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"

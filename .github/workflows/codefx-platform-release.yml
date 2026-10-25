@@ -1,0 +1,78 @@
+name: Codefx three-platform packages
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        type: string
+        required: true
+        default: rust-v0.164.0
+permissions:
+  contents: read
+concurrency:
+  group: codefx-platform-release-${{ inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    permissions: {contents: read, actions: write}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Validate release and retire the previously published Linux transfer artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName
+          if [[ "$RELEASE_TAG" == rust-v0.164.0 ]]; then
+            published="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets[] | select(.name == "codex-package-x86_64-unknown-linux-musl.tar.gz") | .digest')"
+            if [[ "$published" == sha256:747ff33ad0eb3aaced08fe8308b00be772cac671740e9918ec1eaf1be37b9e67 ]]; then
+              for artifact in $(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts" --jq '.artifacts[] | select(.name == "verified-codefx-linux" and .workflow_run.id == 40147229358) | .id'); do
+                gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact"
+              done
+            fi
+          fi
+  platforms:
+    needs: prepare
+    if: github.repository == 'hitmux/codefx'
+    permissions: {contents: write, actions: write}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, target: x86_64-unknown-linux-musl}
+          - {runner: macos-15, target: aarch64-apple-darwin}
+          - {runner: windows-2025, target: x86_64-pc-windows-msvc}
+          - {runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl}
+          - {runner: macos-15-intel, target: x86_64-apple-darwin}
+          - {runner: windows-11-arm, target: aarch64-pc-windows-msvc}
+    uses: ./.github/workflows/codefx-native-package.yml
+    with:
+      tag: ${{ inputs.tag }}
+      target: ${{ matrix.target }}
+      runner: ${{ matrix.runner }}
+  manifest:
+    needs: platforms
+    runs-on: ubuntu-24.04
+    permissions: {contents: write}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Verify published digests and publish combined manifest last
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir dist
+          cd dist
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$target.sha256"
+            file="codex-package-$target.tar.gz"
+            digest="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets[] | [.name,.digest] | @tsv' | awk -F '\t' -v name="$file" '$1 == name {print $2}')"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            [[ "$(cat "$target.sha256")" == "${digest#sha256:}  $file" ]]
+            cat "$target.sha256" >> codex-package_SHA256SUMS
+          done
+          gh release upload "$RELEASE_TAG" codex-package_SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
