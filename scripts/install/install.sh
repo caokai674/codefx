@@ -43,6 +43,13 @@ conflict_manager=""
 conflict_path=""
 lock_kind=""
 tmp_dir=""
+CF_STOP_RUNNING="${CODEFX_STOP_RUNNING:-0}"
+CF_DRY_RUN=0
+CF_DAEMON_POLICY="${CODEFX_DAEMON_POLICY:-auto}"
+CF_TIMEOUT="${CODEFX_PROCESS_TIMEOUT:-30}"
+cf_prepared=0
+cf_tx=""
+cf_committed=0
 
 step() {
   printf '==> %s\n' "$1"
@@ -85,6 +92,9 @@ validate_version() {
 parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --stop-running) CF_STOP_RUNNING=1 ;;
+      --dry-run) CF_DRY_RUN=1 ;;
+      --keep-daemon) CF_DAEMON_POLICY=keep ;;
       --release)
         if [ "$#" -lt 2 ]; then
           echo "--release requires a value." >&2
@@ -95,7 +105,13 @@ parse_args() {
         ;;
       --help | -h)
         cat <<EOF
-Usage: install.sh [--release VERSION]
+Usage: install.sh [--release VERSION] [--dry-run] [--stop-running] [--keep-daemon]
+
+Default: keep package-manager registrations; refuse active Codex sessions.
+--stop-running  Request normal exit (SIGTERM); never force-kill sessions.
+--keep-daemon   Leave the independent daemon package and runtime unchanged.
+--dry-run       Resolve assets and list commands without changing the installation.
+CODEFX_PROCESS_TIMEOUT bounds process operations (1..300 seconds, default 30).
 
 Environment:
   CODEX_RELEASE          Version to install; overridden by --release.
@@ -124,7 +140,7 @@ download_file() {
         curl -fsSL --connect-timeout "$RELEASES_CONNECT_TIMEOUT" --max-time "$RELEASES_ASSET_TIMEOUT" "$url" -o "$output"
         ;;
       *)
-        curl -fsSL "$url" -o "$output"
+        curl -fsSL --retry 3 --connect-timeout 10 --max-time "$RELEASES_ASSET_TIMEOUT" "$url" -o "$output"
         ;;
     esac
     return
@@ -136,7 +152,7 @@ download_file() {
         wget -q -t 1 -T "$RELEASES_ASSET_TIMEOUT" -O "$output" "$url"
         ;;
       *)
-        wget -q -O "$output" "$url"
+        wget -q -t 3 -T "$RELEASES_ASSET_TIMEOUT" -O "$output" "$url"
         ;;
     esac
     return
@@ -155,7 +171,7 @@ download_text() {
         curl -fsSL --connect-timeout "$RELEASES_CONNECT_TIMEOUT" --max-time "$RELEASES_METADATA_TIMEOUT" "$url"
         ;;
       *)
-        curl -fsSL "$url"
+        curl -fsSL --retry 3 --connect-timeout 10 --max-time "$RELEASES_METADATA_TIMEOUT" "$url"
         ;;
     esac
     return
@@ -167,7 +183,7 @@ download_text() {
         wget -q -t 1 -T "$RELEASES_METADATA_TIMEOUT" -O - "$url"
         ;;
       *)
-        wget -q -O - "$url"
+        wget -q -t 3 -T "$RELEASES_METADATA_TIMEOUT" -O - "$url"
         ;;
     esac
     return
@@ -712,27 +728,21 @@ mkdir_lock_is_stale() {
 acquire_install_lock() {
   mkdir -p "$STANDALONE_ROOT"
 
-  if [ "$os" = "darwin" ] && command -v lockf >/dev/null 2>&1; then
-    : >>"$LOCK_FILE"
-    exec 9<>"$LOCK_FILE"
-    lockf 9
-    lock_kind="lockf"
-    return
-  fi
-
   if command -v flock >/dev/null 2>&1; then
     exec 9>"$LOCK_FILE"
-    flock 9
+    flock -w 120 9
     lock_kind="flock"
     return
   fi
 
+  lock_deadline=$(( $(date +%s) + 120 ))
   while ! mkdir "$LOCK_DIR" 2>/dev/null; do
     if mkdir_lock_is_stale; then
       warn "Removing stale installer lock at $LOCK_DIR"
       rm -rf "$LOCK_DIR"
       continue
     fi
+    [ "$(date +%s)" -lt "$lock_deadline" ] || { echo "Installer lock timed out." >&2; return 1; }
     sleep 1
   done
 
@@ -939,7 +949,7 @@ version_from_binary() {
     return 1
   fi
 
-  version_output="$("$codex_path" --version 2>/dev/null)" || return 1
+  version_output="$(cf_run "$codex_path" --version 2>/dev/null)" || return 1
   printf '%s\n' "$version_output" | sed -n 's/^codefx \([0-9][0-9A-Za-z.+-]*\)$/\1/p' | head -n 1
 }
 
@@ -969,15 +979,6 @@ classify_existing_codex() {
   if [ -z "$existing_path" ] || [ "$existing_path" = "$BIN_PATH" ]; then
     return 1
   fi
-
-  case "$existing_path" in
-    /opt/homebrew/* | /usr/local/*)
-      if [ "$os" = "darwin" ]; then
-        printf 'brew\n'
-        return 0
-      fi
-      ;;
-  esac
 
   if [ -f "$existing_path" ] && grep -F "#!/usr/bin/env node" "$existing_path" >/dev/null 2>&1; then
     case "$existing_path" in
@@ -1062,44 +1063,18 @@ detect_conflicting_install() {
   existing_path="$(resolve_existing_codex)"
   manager="$(classify_existing_codex "$existing_path" || true)"
 
-  if [ -z "$manager" ]; then
-    return
-  fi
+  if [ -z "$manager" ] && [ -n "$existing_path" ] && [ "$existing_path" != "$BIN_PATH" ]; then manager=native; fi
 
   conflict_manager="$manager"
   conflict_path="$existing_path"
+  [ -n "$manager" ] || return 0
   step "Detected existing $manager-managed Codex at $existing_path"
   warn "Multiple managed Codex installs can be ambiguous because PATH order decides which one runs."
 }
 
 handle_conflicting_install() {
-  if [ -z "$conflict_manager" ]; then
-    return
-  fi
-
-  case "$conflict_manager" in
-    brew)
-      uninstall_cmd="brew uninstall --cask codex"
-      ;;
-    bun)
-      uninstall_cmd="bun remove -g @openai/codex"
-      ;;
-    *)
-      uninstall_cmd="npm uninstall -g @openai/codex"
-      ;;
-  esac
-
-  replace_official=false
-  case "$CODEFX_REPLACE_OFFICIAL" in
-    1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss]) replace_official=true ;;
-  esac
-  if $replace_official || prompt_yes_no "Uninstall the existing $conflict_manager-managed Codex now?"; then
-    step "Running: $uninstall_cmd"
-    if ! sh -c "$uninstall_cmd"; then
-      warn "Failed to uninstall the existing $conflict_manager-managed Codex. Continuing with the standalone install."
-    fi
-  else
-    warn "Leaving the existing $conflict_manager-managed Codex installed. PATH order will determine which codex runs."
+  if [ -n "$conflict_path" ]; then
+    step "Original package-manager installation retained at $conflict_path."
   fi
 }
 
@@ -1111,6 +1086,7 @@ install_package_release() {
   mkdir -p "$RELEASES_DIR"
   rm -rf "$stage_release"
   mkdir -p "$stage_release"
+  cf_validate_archive "$archive_path"
   tar -xzf "$archive_path" -C "$stage_release"
   chmod 0755 \
     "$stage_release/bin/codex" \
@@ -1125,9 +1101,12 @@ install_package_release() {
     echo "Staged Codefx package failed executable or version validation; existing installation preserved." >&2
     return 1
   fi
+  cf_prepare
   if [ -e "$release_dir" ] || [ -L "$release_dir" ]; then
     # Keep the previous bytes until the new directory has been committed.
     backup_release="$RELEASES_DIR/.backup.$(basename "$release_dir").$$"
+    printf '%s\n' "$release_dir" > "$cf_tx/release.path"
+    printf '%s\n' "$backup_release" > "$cf_tx/release.backup"
     mv "$release_dir" "$backup_release"
     if ! mv "$stage_release" "$release_dir"; then
       mv "$backup_release" "$release_dir"
@@ -1149,6 +1128,7 @@ install_legacy_platform_npm_release() {
   mkdir -p "$RELEASES_DIR"
   rm -rf "$stage_release" "$extract_dir"
   mkdir -p "$stage_release/codex-resources" "$extract_dir"
+  cf_validate_archive "$archive_path"
   tar -xzf "$archive_path" -C "$extract_dir"
 
   cp "$vendor_root/codex/codex" "$stage_release/codex"
@@ -1163,9 +1143,12 @@ install_legacy_platform_npm_release() {
     echo "Staged Codefx package failed executable or version validation; existing installation preserved." >&2
     return 1
   fi
+  cf_prepare
   if [ -e "$release_dir" ] || [ -L "$release_dir" ]; then
     # Keep the previous bytes until the new directory has been committed.
     backup_release="$RELEASES_DIR/.backup.$(basename "$release_dir").$$"
+    printf '%s\n' "$release_dir" > "$cf_tx/release.path"
+    printf '%s\n' "$backup_release" > "$cf_tx/release.backup"
     mv "$release_dir" "$backup_release"
     if ! mv "$stage_release" "$release_dir"; then
       mv "$backup_release" "$release_dir"
@@ -1197,6 +1180,12 @@ release_contents_are_complete() (
 
   case "$layout" in
     package)
+      cf_manifest=$(tr -d '\n\r' < "$release_dir/codex-package.json" 2>/dev/null) || return 1
+      cf_meta_version=$(printf '%s' "$cf_manifest" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+      cf_meta_target=$(printf '%s' "$cf_manifest" | sed -n 's/.*"target"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+      cf_meta_entry=$(printf '%s' "$cf_manifest" | sed -n 's/.*"entrypoint"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+      [ "$cf_meta_version" = "$expected_version" ] && [ "$cf_meta_target" = "$expected_target" ] &&
+        [ "$cf_meta_entry" = bin/codex ] &&
       [ -f "$release_dir/codex-package.json" ] &&
         [ -x "$release_dir/bin/codex" ] &&
         [ -x "$release_dir/bin/codex-code-mode-host" ] &&
@@ -1261,13 +1250,240 @@ update_visible_command() {
 }
 
 verify_visible_command() {
-  "$BIN_PATH" --version >/dev/null
+  [ "$(version_from_binary "$BIN_PATH")" = "$resolved_version" ]
   if [ "$os" = "darwin" ] && [ "$install_layout" = "package" ]; then
     [ -x "$CODE_MODE_HOST_BIN_PATH" ]
   fi
 }
 
+# Manual installers and guarded Rust updaters share the transaction machinery.
+# Guarded updaters coordinate process lifetimes in Rust; never stop their parent.
+cf_guarded() {
+  [ "${CODEX_INSTALL_IF_LATEST:-0}" = 1 ] || [ "${CODEX_INSTALL_IF_CURRENT:-0}" = 1 ] ||
+    [ "$DAEMON_ONLY" = 1 ] || [ "${old_updater_parent:-false}" = true ]
+}
+
+cf_run() (
+  # Portable bounded execution; no dependency on GNU timeout on macOS.
+  "$@" & cf_child=$!
+  ( trap 'kill "$cf_sleep" 2>/dev/null; exit 0' TERM INT
+    sleep "$CF_TIMEOUT" & cf_sleep=$!
+    wait "$cf_sleep"; kill -TERM "$cf_child" 2>/dev/null || exit 0
+    sleep 3 & cf_sleep=$!; wait "$cf_sleep"
+    kill -KILL "$cf_child" 2>/dev/null || true
+  ) & cf_watch=$!
+  cf_result=0
+  wait "$cf_child" || cf_result=$?
+  kill "$cf_watch" 2>/dev/null || true
+  wait "$cf_watch" 2>/dev/null || true
+  exit "$cf_result"
+)
+
+cf_inventory() (
+  printf '==> Existing codex commands (all PATH entries):\n'
+  cf_rest="$PATH:"
+  while [ -n "$cf_rest" ]; do
+    cf_part=${cf_rest%%:*}; cf_rest=${cf_rest#*:}
+    [ -n "$cf_part" ] || cf_part=.
+    [ -f "$cf_part/codex" ] || continue
+    cf_resolved="$cf_part/codex"; cf_i=0
+    while [ -L "$cf_resolved" ] && [ "$cf_i" -lt 40 ]; do
+      cf_link=$(readlink "$cf_resolved")
+      case "$cf_link" in /*) cf_resolved=$cf_link ;; *) cf_resolved="$(dirname "$cf_resolved")/$cf_link" ;; esac
+      cf_i=$((cf_i+1))
+    done
+    cf_kind=native
+    case "$cf_resolved" in
+      *pnpm*|*\.pnpm/*) cf_kind=pnpm ;;
+      *\.bun/*) cf_kind=bun ;;
+      *\.vite-plus/*|*\.vp/*) cf_kind=vp ;;
+      *node_modules/@openai/codex/*) cf_kind=npm ;;
+      */Caskroom/codex/*|*/Cellar/codex/*) cf_kind=brew ;;
+    esac
+    printf '    %s [%s] -> %s\n' "$cf_part/codex" "$cf_kind" "$cf_resolved"
+  done
+)
+
+cf_processes() (
+  # ps failure is an error, rather than evidence that no process exists.
+  ps -u "$(id -u)" -o pid= -o ppid= -o comm= > "$tmp_dir/processes" || {
+    echo 'Cannot inspect running processes; installation was stopped safely.' >&2; return 1;
+  }
+  awk '$3 ~ /(^|\/)(codex|codefx)(\.exe)?$/ { print $1, $2, $3 }' "$tmp_dir/processes"
+)
+
+cf_prepare() {
+  [ "$cf_prepared" = 0 ] || return 0
+  cf_prepared=1
+  if ! cf_guarded; then
+    cf_processes > "$tmp_dir/active-codex" || return 1
+    if [ -s "$tmp_dir/active-codex" ]; then
+      cat "$tmp_dir/active-codex" >&2
+      if [ "$CF_STOP_RUNNING" != 1 ]; then
+        echo 'Codex is running. Close the listed sessions, or use --stop-running from an external terminal.' >&2
+        return 1
+      fi
+      # An installer inside Codex must never terminate its own ancestor.
+      cf_ancestor=$$
+      while [ "$cf_ancestor" -gt 1 ]; do
+        if awk -v p="$cf_ancestor" '$1 == p { found=1 } END { exit !found }' "$tmp_dir/active-codex"; then
+          echo 'Run this installer from an external terminal: its ancestor is Codex.' >&2; return 1
+        fi
+        cf_parent=$(awk -v p="$cf_ancestor" '$1 == p { print $2; exit }' "$tmp_dir/processes")
+        [ -n "$cf_parent" ] || break
+        cf_ancestor=$cf_parent
+      done
+    fi
+  fi
+  cf_tx="$STANDALONE_ROOT/.transaction"
+  mkdir -m 700 "$cf_tx"
+  cf_snapshot "$CURRENT_LINK" current
+  cf_snapshot "$AUTO_UPDATE_VERSION" channel
+  cf_snapshot "$STANDALONE_ROOT/selection-history" history
+  if [ "$DAEMON_ONLY" != 1 ]; then
+    cf_snapshot "$BIN_PATH" visible
+    cf_snapshot "$CODE_MODE_HOST_BIN_PATH" host
+    cf_snapshot "$(pick_profile)" profile
+  fi
+  cf_snapshot "$CODEX_HOME_DIR/packages/app-server-daemon/current" daemon-current
+  cf_snapshot "$CODEX_HOME_DIR/packages/app-server-daemon/auto-update-version" daemon-channel
+  cf_snapshot "$CODEX_HOME_DIR/packages/app-server-daemon/selection-history" daemon-history
+  cf_snapshot "$CODEX_HOME_DIR/app-server-daemon/settings.json" daemon-settings
+  if ! cf_guarded; then
+    cf_old_cli=$(resolve_existing_codex)
+    if [ -n "$cf_old_cli" ] && [ "$CF_DAEMON_POLICY" != keep ] &&
+      { [ -d "$CODEX_HOME_DIR/app-server-daemon" ] || [ -d "$CODEX_HOME_DIR/packages/app-server-daemon" ]; }; then
+      # A failed version query alone does not distinguish an absent daemon.
+      if cf_run "$cf_old_cli" app-server daemon version > "$cf_tx/daemon-version" 2>/dev/null &&
+        grep -Eq '"status"[[:space:]]*:[[:space:]]*"running"' "$cf_tx/daemon-version"; then
+        if [ "$CF_STOP_RUNNING" != 1 ]; then
+          echo 'A managed app-server daemon is running; close it or use --stop-running.' >&2; return 1
+        fi
+        printf '%s\n' "$cf_old_cli" > "$cf_tx/restart-cli"
+        cf_run "$cf_old_cli" app-server daemon stop > "$cf_tx/daemon-stop" 2>&1 || {
+          cat "$cf_tx/daemon-stop" >&2; return 1;
+        }
+      fi
+    fi
+    if [ -s "$tmp_dir/active-codex" ]; then
+      while read -r cf_pid cf_ppid cf_name; do
+        # Recheck identity before signalling. Never escalate to SIGKILL.
+        cf_now=$(ps -p "$cf_pid" -o ppid= -o comm= 2>/dev/null | awk '{$1=$1;print}')
+        if [ "$cf_now" = "$cf_ppid $cf_name" ]; then kill -TERM "$cf_pid" 2>/dev/null || true; fi
+      done < "$tmp_dir/active-codex"
+      cf_deadline=$(( $(date +%s) + CF_TIMEOUT ))
+      while :; do
+        cf_processes > "$tmp_dir/remaining" || return 1
+        [ -s "$tmp_dir/remaining" ] || break
+        if [ "$(date +%s)" -ge "$cf_deadline" ]; then
+          cat "$tmp_dir/remaining" >&2
+          echo 'Timed out waiting for Codex to exit. Original installation will be restored.' >&2; return 1
+        fi
+        sleep 1
+      done
+    fi
+  fi
+}
+
+cf_snapshot() (
+  cf_path=$1; cf_key=$2
+  if [ -L "$cf_path" ]; then
+    readlink "$cf_path" > "$cf_tx/$cf_key.link"
+  elif [ -f "$cf_path" ]; then
+    cp -p "$cf_path" "$cf_tx/$cf_key.file"
+  elif [ -e "$cf_path" ]; then
+    echo "Refusing to overwrite a directory or special file: $cf_path" >&2; return 1
+  fi
+  printf '%s\n' "$cf_path" > "$cf_tx/$cf_key.path"
+)
+
+cf_restore() (
+  cf_failed=0
+  if [ -f "$cf_tx/migration-attempted" ] && [ -x "$BIN_PATH" ]; then
+    cf_run "$BIN_PATH" app-server daemon stop > "$cf_tx/migration-stop" 2>&1 || {
+      cat "$cf_tx/migration-stop" >&2; return 1;
+    }
+  fi
+  # Restore the original package bytes before restoring links and runtime.
+  if [ -f "$cf_tx/release.path" ] && [ -f "$cf_tx/release.backup" ]; then
+    cf_original=$(cat "$cf_tx/release.path"); cf_saved=$(cat "$cf_tx/release.backup")
+    if [ -d "$cf_saved" ]; then
+      rm -rf "$cf_original" && mv "$cf_saved" "$cf_original" || cf_failed=1
+    fi
+  fi
+  for cf_record in "$cf_tx"/*.path; do
+    [ -f "$cf_record" ] || continue
+    [ "${cf_record##*/}" != release.path ] || continue
+    cf_key=${cf_record%.path}; cf_path=$(cat "$cf_record")
+    if [ -d "$cf_path" ] && [ ! -L "$cf_path" ]; then
+      warn "Rollback preserved unexpected directory $cf_path"; cf_failed=1; continue
+    fi
+    rm -f "$cf_path" || { cf_failed=1; continue; }
+    if [ -f "$cf_key.link" ]; then
+      ln -s "$(cat "$cf_key.link")" "$cf_path" || cf_failed=1
+    elif [ -f "$cf_key.file" ]; then
+      cp -p "$cf_key.file" "$cf_path" || cf_failed=1
+    fi
+  done
+  if [ -f "$cf_tx/restart-cli" ]; then
+    cf_restart=$(cat "$cf_tx/restart-cli")
+    cf_run "$cf_restart" app-server daemon start > "$cf_tx/daemon-restore" 2>&1 || {
+      cat "$cf_tx/daemon-restore" >&2; cf_failed=1;
+    }
+  fi
+  [ "$cf_failed" = 0 ]
+)
+
+cf_migrate_daemon() {
+  cf_guarded && return 0
+  [ "$CF_DAEMON_POLICY" != keep ] || return 0
+  if [ -f "$CODEX_HOME_DIR/app-server-daemon/settings.json" ] ||
+    [ -e "$CODEX_HOME_DIR/packages/app-server-daemon/current" ] || [ -f "$cf_tx/restart-cli" ]; then
+    : > "$cf_tx/migration-attempted"
+    step 'Migrating the managed app-server daemon to the verified Codefx package'
+    cf_run "$BIN_PATH" app-server daemon update --from-cli --yes || return 1
+    if [ -f "$cf_tx/restart-cli" ]; then
+      cf_run "$BIN_PATH" app-server daemon start || return 1
+      cf_run "$BIN_PATH" app-server daemon version > "$cf_tx/daemon-health" || return 1
+      grep -Eq '"status"[[:space:]]*:[[:space:]]*"running"' "$cf_tx/daemon-health" || return 1
+    else
+      # from-cli may start a runtime; preserve the original stopped state.
+      cf_run "$BIN_PATH" app-server daemon stop || return 1
+    fi
+  fi
+}
+
+cf_validate_archive() (
+  # tar listings are checked before extraction: no links, devices or traversal.
+  tar -tzf "$1" > "$tmp_dir/archive-names" || return 1
+  awk 'BEGIN { ok=1 } /^\// || /\\/ || /(^|\/)\.\.(\/|$)/ || /[[:cntrl:]]/ { ok=0 } END {exit !ok}' "$tmp_dir/archive-names" || {
+    echo 'Unsafe archive member path.' >&2; return 1;
+  }
+  tar -tvzf "$1" > "$tmp_dir/archive-types" || return 1
+  awk 'substr($0,1,1) != "-" && substr($0,1,1) != "d" { bad=1 } END {exit bad}' "$tmp_dir/archive-types" || {
+    echo 'Archive links and special files are not allowed.' >&2; return 1;
+  }
+)
+
+cf_finish() {
+  if [ -n "$cf_tx" ] && [ -d "$cf_tx" ]; then
+    # Keep the previous entrypoints and profile available for manual recovery.
+    rm -f "$cf_tx/restart-cli"
+    mv "$cf_tx" "$STANDALONE_ROOT/.rollback.$(date +%s).$$"
+    cf_tx=""
+  fi
+  cf_committed=1
+}
+
 parse_args "$@"
+case "$CF_TIMEOUT" in ''|*[!0-9]*) echo 'Invalid process timeout.' >&2; exit 2 ;; esac
+[ "$CF_TIMEOUT" -ge 1 ] && [ "$CF_TIMEOUT" -le 300 ] || { echo 'Process timeout must be 1..300.' >&2; exit 2; }
+case "$CF_DAEMON_POLICY" in auto|keep) ;; *) echo 'Invalid daemon policy.' >&2; exit 2 ;; esac
+# Shell profile entries use double quotes; reject characters interpreted there.
+case "$BIN_DIR" in /*) ;; *) echo 'CODEX_INSTALL_DIR must be absolute.' >&2; exit 2 ;; esac
+case "$BIN_DIR" in *'"'*|*'$'*|*'`'*|*'\'*|*'
+'*) echo 'Install path contains unsupported shell metacharacters.' >&2; exit 2 ;; esac
+
 
 require_command mktemp
 require_command tar
@@ -1345,18 +1561,40 @@ if [ "$DAEMON_ONLY" != "1" ]; then
   detect_conflicting_install
 fi
 
+cf_inventory
+if [ "$CF_DRY_RUN" = 1 ]; then
+  step "Dry run: verified release metadata contains $asset ($vendor_target)."
+  step "Destination: $BIN_PATH; daemon policy: $CF_DAEMON_POLICY. No changes made."
+  exit 0
+fi
 tmp_dir="$(mktemp -d)"
 cleanup() {
+  cf_exit=$?
+  trap - EXIT INT TERM
+  if [ "$cf_committed" = 0 ] && [ -n "$cf_tx" ] && [ -d "$cf_tx" ]; then
+    warn 'Restoring the previous installation after an incomplete transaction.'
+    if cf_restore; then rm -rf "$cf_tx"; else
+      warn "Rollback needs attention; recovery files retained at $cf_tx"
+      cf_exit=1
+    fi
+  fi
   release_install_lock
   if [ -n "$tmp_dir" ]; then
     rm -rf "$tmp_dir"
   fi
+  exit "$cf_exit"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
 acquire_install_lock
+if [ -d "$STANDALONE_ROOT/.transaction" ]; then
+  cf_tx="$STANDALONE_ROOT/.transaction"
+  warn 'Recovering an interrupted installation before proceeding.'
+  cf_restore || exit 1
+  rm -rf "$cf_tx"; cf_tx=""
+fi
 if [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" = "1" ] &&
   { [ -e "$STANDALONE_ROOT/current" ] || [ -L "$STANDALONE_ROOT/current" ]; }; then
   echo "A dedicated daemon is already selected; retry the update." >&2
@@ -1448,6 +1686,7 @@ if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"
   echo "Installed Codex command did not report expected version $resolved_version." >&2
   exit 1
 fi
+cf_prepare
 if [ "$DAEMON_ONLY" = "1" ] && [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" != "1" ]; then
   installed_codex="$release_dir/codex"
   if [ "$install_layout" = "package" ]; then
@@ -1486,12 +1725,15 @@ else
   rm -f "$AUTO_UPDATE_VERSION"
 fi
 if [ "$DAEMON_ONLY" = "1" ]; then
+  cf_finish
   release_install_lock
   exit 0
 fi
 update_visible_command "$release_dir"
 add_to_path
 verify_visible_command
+cf_migrate_daemon
+cf_finish
 if ! prune_standalone_releases; then
   warn "Could not safely inspect old Codefx releases; skipped remaining cleanup."
 fi

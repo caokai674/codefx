@@ -45,7 +45,7 @@ try {
     function pnpm { $global:CodefxTestManagerCalls++ }
     function vp { $global:CodefxTestManagerCalls++ }
     function Invoke-WebRequest {
-        param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile)
+        param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile, [int]$TimeoutSec)
         $global:CodefxTestDownloadAttempted = $true
         throw 'Mock installer download failure'
     }

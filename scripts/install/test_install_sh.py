@@ -55,7 +55,7 @@ class InstallShTest(unittest.TestCase):
                 self.assertFalse(log.exists(), "Package managers ran before a verified replacement")
                 self.assertIn("codex-cli", subprocess.check_output([str(old), "--version"], text=True))
 
-    def test_replacement_uninstalls_only_after_new_command_runs(self) -> None:
+    def test_replacement_retains_package_manager_install_after_new_command_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             old, log = create_official_install(root)
@@ -65,12 +65,12 @@ class InstallShTest(unittest.TestCase):
                 archive_path=archive, checksum_path=checksum,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse(old.exists())
-            self.assertEqual(log.read_text(), f"npm attempted\nnpm verified codefx {VERSION}\n")
+            self.assertTrue(old.exists())
+            self.assertFalse(log.exists(), "Retained package managers must not be modified")
             visible = root / "install-bin/codex"
             self.assertEqual(subprocess.check_output([str(visible), "--version"], text=True).strip(), f"codefx {VERSION}")
             self.assertFalse(list(root.glob("codefx-install.*")))
-            self.assertEqual(len(requests), 4)
+            self.assertEqual(len(requests), 5)
 
     def test_same_version_standalone_survives_invalid_staged_binary(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1031,6 +1031,8 @@ def run_installer_in(
     daemon_only: bool = False,
     manual_update: bool = False,
     replacement_wrapper: bool = False,
+    arguments: tuple[str, ...] = (),
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     bin_dir = root / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -1055,8 +1057,11 @@ def run_installer_in(
             printf '%s\n' "$url" >>"$CODEX_TEST_REQUEST_LOG"
 
             case "$url" in
-              https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install.sh)
+              https://raw.githubusercontent.com/hitmux/codefx/*/scripts/install/install.sh)
                 cp "$CODEFX_TEST_BASE_INSTALLER" "$output"
+                ;;
+              https://api.github.com/repos/hitmux/codefx/commits/main)
+                printf '  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n' > "$output"
                 ;;
               https://api.github.com/*)
                 if [ "$CODEX_TEST_METADATA_FAILURE" = "1" ]; then
@@ -1161,6 +1166,10 @@ def run_installer_in(
 
     home = root / "home"
     home.mkdir(exist_ok=True)
+    fixture_ps = bin_dir / "ps"
+    prior_ps = fixture_ps.read_text() if fixture_ps.exists() else "#!/bin/sh\nexec /bin/ps \"$@\"\n"
+    fixture_ps.write_text(prior_ps.replace("#!/bin/sh\n", '#!/bin/sh\nif [ "${1:-}" = -u ]; then exit 0; fi\n', 1))
+    fixture_ps.chmod(0o755)
     env = os.environ.copy()
     env.update(
         {
@@ -1212,8 +1221,9 @@ def run_installer_in(
         env["CODEX_INSTALLER_USE_RELEASES_OPENAI_COM"] = (
             "TRUE" if use_mirror else "false"
         )
+    env.update(extra_env or {})
     result = subprocess.run(
-        ["/bin/sh", str(INSTALL_SCRIPT.with_name("install-codefx.sh") if replacement_wrapper else INSTALL_SCRIPT)],
+        ["/bin/sh", str(INSTALL_SCRIPT.with_name("install-codefx.sh") if replacement_wrapper else INSTALL_SCRIPT), *arguments],
         capture_output=True,
         check=False,
         env=env,

@@ -1,6 +1,10 @@
 [CmdletBinding()]
 param(
-    [string]$Release = $env:CODEX_RELEASE
+    [string]$Release = $env:CODEX_RELEASE,
+    [switch]$DryRun,
+    [switch]$StopRunning,
+    [switch]$KeepDaemon,
+    [ValidateRange(1,300)][int]$ProcessTimeout = 30
 )
 
 Set-StrictMode -Version Latest
@@ -112,6 +116,16 @@ function Find-ReleaseAssetMetadata {
     }
 }
 
+function Invoke-CodefxDownload {
+    param([string]$Uri, [string]$OutFile)
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $OutFile -TimeoutSec $ReleasesAssetTimeoutSec
+            return
+        } catch { if ($attempt -eq 3) { throw }; Start-Sleep -Seconds $attempt }
+    }
+}
+
 function Invoke-WebRequestWithFallback {
     param(
         [object]$Metadata,
@@ -126,7 +140,7 @@ function Invoke-WebRequestWithFallback {
         if ($Metadata.Url.StartsWith("$ReleasesBaseUri/", [System.StringComparison]::OrdinalIgnoreCase)) {
             Invoke-WebRequest -UseBasicParsing -Uri $Metadata.Url -OutFile $OutFile -TimeoutSec $ReleasesAssetTimeoutSec
         } else {
-            Invoke-WebRequest -UseBasicParsing -Uri $Metadata.Url -OutFile $OutFile
+            Invoke-CodefxDownload -Uri $Metadata.Url -OutFile $OutFile
         }
         Test-ArchiveDigest -ArchivePath $OutFile -ExpectedDigest $ExpectedDigest
         if (-not [string]::IsNullOrWhiteSpace($RequiredManifestAsset)) {
@@ -137,7 +151,7 @@ function Invoke-WebRequestWithFallback {
             throw
         }
         Write-WarningStep "Could not download or verify $($Metadata.Url); retrying from GitHub Releases."
-        Invoke-WebRequest -UseBasicParsing -Uri $Metadata.FallbackUrl -OutFile $OutFile
+        Invoke-CodefxDownload -Uri $Metadata.FallbackUrl -OutFile $OutFile
         try {
             Test-ArchiveDigest -ArchivePath $OutFile -ExpectedDigest $ExpectedDigest
             if (-not [string]::IsNullOrWhiteSpace($RequiredManifestAsset)) {
@@ -297,6 +311,7 @@ function Invoke-WithInstallLock {
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LockPath) | Out-Null
     $lock = $null
+    $lockDeadline = [DateTime]::UtcNow.AddSeconds(120)
     while ($null -eq $lock) {
         try {
             $lock = [System.IO.File]::Open(
@@ -306,11 +321,24 @@ function Invoke-WithInstallLock {
                 [System.IO.FileShare]::None
             )
         } catch [System.IO.IOException] {
+            if ([DateTime]::UtcNow -ge $lockDeadline) { throw "Installer lock timed out." }
             Start-Sleep -Milliseconds 250
         }
     }
     try {
         & $Script
+        if ($script:Cf.Prepared) {
+            $script:Cf.RestartCli = $null
+            Save-CodefxJournal
+            Move-Item -LiteralPath $script:Cf.Root -Destination (Join-Path $standaloneRoot ('.rollback.' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + '.' + $PID))
+        }
+    } catch {
+        if ($script:Cf.Prepared) {
+            Write-WarningStep 'Restoring the previous installation after an incomplete transaction.'
+            try { Undo-CodefxTransaction; Remove-Item -LiteralPath $script:Cf.Root -Recurse -Force }
+            catch { Write-WarningStep "Rollback needs attention; recovery files retained at $($script:Cf.Root): $_" }
+        }
+        throw
     } finally {
         $lock.Dispose()
     }
@@ -356,7 +384,7 @@ function Resolve-ReleaseFromGitHub {
     }
 
     try {
-        $releaseMetadata = Invoke-RestMethod -Uri $metadataUri
+        $releaseMetadata = Invoke-RestMethod -Uri $metadataUri -TimeoutSec $ReleasesMetadataTimeoutSec
     } catch {
         throw "Could not fetch GitHub release metadata for Codex $requestedRelease. GitHub API may be unavailable or rate limited. $($_.Exception.Message)"
     }
@@ -426,6 +454,11 @@ function Get-VersionFromBinary {
     }
 
     try {
+        if ([IO.Path]::GetExtension($CodexPath) -ieq '.exe') {
+            $versionOutput = (Invoke-CodefxBounded $CodexPath @('--version')).Trim()
+            if ($versionOutput -cmatch '^codefx ([0-9][0-9A-Za-z.+-]*)$') { return $matches[1] }
+            return $null
+        }
         $versionOutput = & $CodexPath --version 2>$null
     } catch {
         return $null
@@ -780,6 +813,10 @@ function Test-PackageContentsAreComplete {
         }
     }
 
+    try {
+        $manifest = Get-Content -LiteralPath (Join-Path $PackageDir 'codex-package.json') -Raw | ConvertFrom-Json
+        if ($manifest.version -cne $resolvedVersion -or $manifest.target -cne $target -or $manifest.entrypoint -cne 'bin/codex.exe') { return $false }
+    } catch { return $false }
     return $true
 }
 
@@ -838,7 +875,7 @@ function Test-ReleaseIsComplete {
 }
 
 function Get-ExistingCodexCommand {
-    $existing = Get-Command codex -ErrorAction SilentlyContinue
+    $existing = Get-Command codex -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($null -eq $existing) {
         return $null
     }
@@ -879,7 +916,8 @@ function Get-ConflictingInstall {
     $existingPath = Get-ExistingCodexCommand
     $manager = Get-ExistingCodexManager -ExistingPath $existingPath -VisibleBinDir $VisibleBinDir
     if ($null -eq $manager) {
-        return $null
+        if (-not $existingPath -or $existingPath.StartsWith($VisibleBinDir, [StringComparison]::OrdinalIgnoreCase)) { return $null }
+        $manager = "native"
     }
 
     Write-Step "Detected existing $manager-managed Codex at $existingPath"
@@ -892,33 +930,8 @@ function Get-ConflictingInstall {
 }
 
 function Maybe-HandleConflictingInstall {
-    param(
-        [object]$Conflict
-    )
-
-    if ($null -eq $Conflict) {
-        return
-    }
-
-    $manager = $Conflict.Manager
-
-    $uninstallArgs = if ($manager -eq "bun") {
-        @("remove", "-g", "@openai/codex")
-    } else {
-        @("uninstall", "-g", "@openai/codex")
-    }
-    $uninstallCommand = if ($manager -eq "bun") { "bun" } else { "npm" }
-
-    if ($CodefxReplaceOfficial -or (Prompt-YesNo "Uninstall the existing $manager-managed Codex now?")) {
-        Write-Step "Running: $uninstallCommand $($uninstallArgs -join ' ')"
-        try {
-            & $uninstallCommand @uninstallArgs
-        } catch {
-            Write-WarningStep "Failed to uninstall the existing $manager-managed Codex. Continuing with the standalone install."
-        }
-    } else {
-        Write-WarningStep "Leaving the existing $manager-managed Codex installed. PATH order will determine which codex runs."
-    }
+    param([object]$Conflict)
+    if ($null -ne $Conflict) { Write-Step "Original package-manager installation retained at $($Conflict.Path)." }
 }
 
 function Test-VisibleCodexCommand {
@@ -927,8 +940,7 @@ function Test-VisibleCodexCommand {
     )
 
     $codexCommand = Join-Path $VisibleBinDir "codex.exe"
-    & $codexCommand --version *> $null
-    if ($LASTEXITCODE -ne 0) {
+    if ((Get-VersionFromBinary $codexCommand) -cne $resolvedVersion) {
         throw "Installed Codex command failed verification: $codexCommand --version"
     }
 }
@@ -941,6 +953,204 @@ if ($env:OS -ne "Windows_NT") {
 if (-not [Environment]::Is64BitOperatingSystem) {
     Write-Error "Codex requires a 64-bit version of Windows."
     exit 1
+}
+
+function Test-CodefxGuardedUpdate {
+    return $env:CODEX_INSTALL_IF_LATEST -eq '1' -or $env:CODEX_INSTALL_IF_CURRENT -eq '1' -or $daemonOnly -or $oldUpdaterParent
+}
+
+function Invoke-CodefxBounded {
+    param([string]$File, [string[]]$Arguments)
+    # ProcessStartInfo.ArgumentList is unavailable in Windows PowerShell 5.1.
+    # Quote according to the Win32 command-line convention, including backslashes.
+    $quoted = foreach ($arg in $Arguments) {
+        '"' + ([regex]::Replace(([regex]::Replace($arg, '(\\*)"', '$1$1\"')), '(\\+)$', '$1$1')) + '"'
+    }
+    $start = New-Object System.Diagnostics.ProcessStartInfo
+    $start.FileName = $File
+    $start.Arguments = $quoted -join ' '
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $start
+    try {
+        if (-not $proc.Start()) { throw "Cannot start $File" }
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit($ProcessTimeout * 1000)) {
+            try { $proc.Kill() } catch {}
+            throw "Timed out running $File $($Arguments -join ' ')"
+        }
+        $stdout = $outTask.GetAwaiter().GetResult()
+        $stderr = $errTask.GetAwaiter().GetResult()
+        if ($proc.ExitCode -ne 0) { throw "$File exited $($proc.ExitCode): $stderr" }
+        return $stdout
+    } finally { $proc.Dispose() }
+}
+
+function Get-CodefxProcesses {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $all = @(Get-CimInstance Win32_Process -Filter "Name = 'codex.exe' OR Name = 'codefx.exe' OR Name = 'codex-code-mode-host.exe'" -ErrorAction Stop)
+    foreach ($entry in $all) {
+        $owner = Invoke-CimMethod -InputObject $entry -MethodName GetOwnerSid -ErrorAction Stop
+        if ($owner.ReturnValue -ne 0) { throw "Cannot inspect ownership of Codex PID $($entry.ProcessId)." }
+        if ($owner.Sid -eq $identity) { $entry }
+    }
+}
+
+function Save-CodefxJournal {
+    $journal = Join-Path $script:Cf.Root 'journal.json'
+    $script:Cf | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath "$journal.tmp" -Encoding UTF8
+    Move-Item -LiteralPath "$journal.tmp" -Destination $journal -Force
+}
+
+function Save-CodefxPath {
+    param([string]$Path, [string]$Key)
+    $record = @{ Path = $Path; Kind = 'absent'; Backup = $null }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($null -ne $item) {
+        if (Test-IsJunction -Path $Path) {
+            Add-JunctionSupportType
+            $record.Kind = 'junction'
+            $record.Backup = [CodexInstaller.JunctionV3]::ResolveDirectory($Path)
+        } elseif ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Unsupported reparse point at $Path."
+        } elseif ($item.PSIsContainer) {
+            if ($Key -ne 'visible') { throw "Unexpected directory at $Path." }
+            # Move-OldStandaloneBinIfApproved validates this layout before moving it.
+            $record.Kind = 'directory'
+        } else {
+            $record.Kind = 'file'
+            $record.Backup = Join-Path $script:Cf.Root "$Key.file"
+            Copy-Item -LiteralPath $Path -Destination $record.Backup
+        }
+    }
+    $script:Cf.Paths += $record
+    Save-CodefxJournal
+}
+
+function Start-CodefxTransaction {
+    if ($script:Cf.Prepared) { return }
+    $active = @()
+    if (-not (Test-CodefxGuardedUpdate)) {
+        $active = @(Get-CodefxProcesses)
+        if ($active.Count -gt 0) {
+            Write-Host ($active | Select-Object ProcessId, ExecutablePath | Out-String)
+            if (-not $StopRunning) { throw 'Codex is running. Close the listed sessions, or use -StopRunning from an external terminal.' }
+            $ancestor = $PID
+            while ($ancestor -gt 0) {
+                if ($active.ProcessId -contains $ancestor) { throw 'Run the installer from an external terminal; its ancestor is Codex.' }
+                $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $ancestor" -ErrorAction Stop
+                if ($null -eq $parent) { break }
+                $ancestor = $parent.ParentProcessId
+            }
+        }
+    }
+    New-Item -ItemType Directory -Path $script:Cf.Root | Out-Null
+    $script:Cf.Prepared = $true
+    Save-CodefxJournal
+    Save-CodefxPath $currentDir current
+    Save-CodefxPath $autoUpdateVersion channel
+    if (-not $daemonOnly) { Save-CodefxPath $visibleBinDir visible }
+    Save-CodefxPath (Join-Path $standaloneRoot 'selection-history') history
+    Save-CodefxPath (Join-Path $codexHome 'packages\app-server-daemon\current') daemon-current
+    Save-CodefxPath (Join-Path $codexHome 'packages\app-server-daemon\auto-update-version') daemon-channel
+    Save-CodefxPath (Join-Path $codexHome 'packages\app-server-daemon\selection-history') daemon-history
+    Save-CodefxPath (Join-Path $codexHome 'app-server-daemon\settings.json') daemon-settings
+    if (-not (Test-CodefxGuardedUpdate)) {
+        $oldCli = Get-ExistingCodexCommand
+        if ($oldCli -and -not $KeepDaemon -and
+            ((Test-Path -LiteralPath (Join-Path $codexHome 'app-server-daemon')) -or
+             (Test-Path -LiteralPath (Join-Path $codexHome 'packages\app-server-daemon')))) {
+            $version = $null
+            try { $version = (Invoke-CodefxBounded $oldCli @('app-server','daemon','version')) | ConvertFrom-Json } catch {}
+            if ($null -ne $version -and $version.status -eq 'running') {
+                if (-not $StopRunning) { throw 'A managed daemon is running. Close it, or use -StopRunning.' }
+                $script:Cf.RestartCli = $oldCli
+                Save-CodefxJournal
+                $null = Invoke-CodefxBounded $oldCli @('app-server','daemon','stop')
+            }
+        }
+        # CloseMainWindow requests normal shutdown. Console sessions without a
+        # window need to be closed by their owner; never use Stop-Process on them.
+        foreach ($entry in $active) {
+            $proc = Get-Process -Id $entry.ProcessId -ErrorAction SilentlyContinue
+            if ($null -ne $proc -and $proc.StartTime.ToUniversalTime() -eq $entry.CreationDate.ToUniversalTime()) {
+                $null = $proc.CloseMainWindow()
+            }
+        }
+        $deadline = [DateTime]::UtcNow.AddSeconds($ProcessTimeout)
+        while (@(Get-CodefxProcesses).Count -gt 0) {
+            if ([DateTime]::UtcNow -ge $deadline) { throw 'Timed out waiting for Codex. Close console sessions manually; the original installation will be restored.' }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+}
+
+function Undo-CodefxTransaction {
+    if ($script:Cf.MigrationAttempted) {
+        $newCli = Join-Path $visibleBinDir 'codex.exe'
+        $null = Invoke-CodefxBounded $newCli @('app-server','daemon','stop')
+    }
+    if ($script:Cf.ReleaseBackup -and (Test-Path -LiteralPath $script:Cf.ReleaseBackup)) {
+        if (Test-Path -LiteralPath $script:Cf.ReleasePath) { Remove-Item -LiteralPath $script:Cf.ReleasePath -Recurse -Force }
+        Move-Item -LiteralPath $script:Cf.ReleaseBackup -Destination $script:Cf.ReleasePath
+    }
+    foreach ($record in $script:Cf.Paths) {
+        if ($record.Kind -eq 'directory') { continue }
+        $item = Get-Item -LiteralPath $record.Path -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item) {
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                [IO.Directory]::Delete($record.Path)
+            } elseif ($item.PSIsContainer) { throw "Rollback preserved unexpected directory $($record.Path)." }
+            else { Remove-Item -LiteralPath $record.Path -Force }
+        }
+        switch ($record.Kind) {
+            'junction' { New-Item -ItemType Junction -Path $record.Path -Target $record.Backup | Out-Null }
+            'file' { Copy-Item -LiteralPath $record.Backup -Destination $record.Path }
+        }
+    }
+    if ($script:Cf.VisibleBackup -and (Test-Path -LiteralPath $script:Cf.VisibleBackup)) {
+        $item = Get-Item -LiteralPath $visibleBinDir -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item) { [IO.Directory]::Delete($visibleBinDir) }
+        Move-Item -LiteralPath $script:Cf.VisibleBackup -Destination $visibleBinDir
+    }
+    [Environment]::SetEnvironmentVariable('Path', $script:Cf.UserPath, 'User')
+    $env:Path = $script:Cf.ProcessPath
+    if ($script:Cf.RestartCli) { $null = Invoke-CodefxBounded $script:Cf.RestartCli @('app-server','daemon','start') }
+}
+
+function Update-CodefxDaemon {
+    if ((Test-CodefxGuardedUpdate) -or $KeepDaemon) { return }
+    if ((Test-Path -LiteralPath (Join-Path $codexHome 'app-server-daemon\settings.json')) -or
+        (Test-Path -LiteralPath (Join-Path $codexHome 'packages\app-server-daemon\current')) -or $script:Cf.RestartCli) {
+        $newCli = Join-Path $visibleBinDir 'codex.exe'
+        $script:Cf.MigrationAttempted = $true
+        Save-CodefxJournal
+        Write-Step 'Migrating the managed daemon to the verified Codefx package'
+        $null = Invoke-CodefxBounded $newCli @('app-server','daemon','update','--from-cli','--yes')
+        if ($script:Cf.RestartCli) {
+            $null = Invoke-CodefxBounded $newCli @('app-server','daemon','start')
+            $health = (Invoke-CodefxBounded $newCli @('app-server','daemon','version')) | ConvertFrom-Json
+            if ($health.status -ne 'running') { throw 'Daemon health check failed.' }
+        } else { $null = Invoke-CodefxBounded $newCli @('app-server','daemon','stop') }
+    }
+}
+
+function Assert-CodefxArchive {
+    param([string]$Archive)
+    $names = @(& tar -tzf $Archive)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot list package archive.' }
+    foreach ($name in $names) {
+        if ($name -match '(^[/\\]|\\|(^|/)\.\.(/|$)|[\x00-\x1f]|:)' -or $name -match '(?i)(^|/)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])([./]|$)' -or $name -match '[. ](/|$)') {
+            throw "Unsafe archive member: $name"
+        }
+    }
+    $types = @(& tar -tvzf $Archive)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect package archive.' }
+    foreach ($line in $types) { if ($line -notmatch '^[-d]') { throw 'Archive links and special files are not allowed.' } }
 }
 
 $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
@@ -1017,6 +1227,18 @@ $installLayout = $assetSelection.InstallLayout
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-install-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 $guardRejected = $false
+$script:Cf = @{
+    Root = (Join-Path $standaloneRoot '.transaction'); Prepared = $false; Paths = @();
+    ReleaseBackup = $null; ReleasePath = $releaseDir; VisibleBackup = $null; RestartCli = $null; MigrationAttempted = $false
+    UserPath = [Environment]::GetEnvironmentVariable('Path', 'User'); ProcessPath = $env:Path
+}
+$cfCommitted = $false
+Write-Step 'Existing codex commands (all PATH entries):'
+Get-Command codex -All -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "    $($_.Source)" }
+if ($DryRun) {
+    Write-Step "Dry run: release $resolvedVersion, target $target, destination $visibleBinDir. No changes made."
+    return
+}
 
 try {
     Invoke-WithInstallLock -LockPath $lockPath -Script {
@@ -1074,6 +1296,15 @@ try {
                 return
             }
         }
+        if (Test-Path -LiteralPath $script:Cf.Root) {
+            $saved = Get-Content -LiteralPath (Join-Path $script:Cf.Root 'journal.json') -Raw | ConvertFrom-Json
+            $fresh = $script:Cf
+            $script:Cf = $saved
+            Write-WarningStep 'Recovering an interrupted installation.'
+            Undo-CodefxTransaction
+            Remove-Item -LiteralPath $script:Cf.Root -Recurse -Force
+            $script:Cf = $fresh
+        }
         Remove-StaleInstallArtifacts -ReleasesDir $releasesDir
 
         if (-not (Test-ReleaseIsComplete -ReleaseDir $releaseDir -ExpectedVersion $resolvedVersion -ExpectedTarget $target -Layout $installLayout)) {
@@ -1100,6 +1331,7 @@ try {
                 Remove-Item -LiteralPath $stagingDir -Recurse -Force
             }
             New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
+            Assert-CodefxArchive $archivePath
             if ($installLayout -eq "Package") {
                 tar -xzf $archivePath -C $stagingDir
                 if ($LASTEXITCODE -ne 0) { throw "Codefx package extraction failed." }
@@ -1139,8 +1371,11 @@ try {
             if ((Get-VersionFromBinary -CodexPath $stagedCodex) -cne $resolvedVersion) {
                 throw "Staged Codefx package failed executable or version validation; existing installation preserved."
             }
+            Start-CodefxTransaction
             if (Test-Path -LiteralPath $releaseDir) {
                 $backupRelease = Join-Path $releasesDir ".backup.$releaseName.$PID"
+                $script:Cf.ReleaseBackup = $backupRelease
+                Save-CodefxJournal
                 Move-Item -LiteralPath $releaseDir -Destination $backupRelease
                 try {
                     Move-Item -LiteralPath $stagingDir -Destination $releaseDir
@@ -1157,6 +1392,7 @@ try {
             throw "Installed Codex command did not report expected version $resolvedVersion."
         }
 
+        Start-CodefxTransaction
         New-Item -ItemType Directory -Force -Path $standaloneRoot | Out-Null
         if ($deferSelection -and (Get-Item -LiteralPath (Join-Path $standaloneRoot "current") -Force -ErrorAction SilentlyContinue)) {
             throw "A dedicated daemon is already selected; retry the update."
@@ -1207,26 +1443,12 @@ try {
         }
         New-Item -ItemType Directory -Force -Path $visibleParent | Out-Null
         $oldStandaloneBackup = Move-OldStandaloneBinIfApproved -VisibleBinDir $visibleBinDir -DefaultVisibleBinDir $defaultVisibleBinDir
-        try {
-            Ensure-Junction -LinkPath $visibleBinDir -TargetPath $currentBinDir -InstallerOwnedTargetPrefix $standaloneRoot
-            Test-VisibleCodexCommand -VisibleBinDir $visibleBinDir
-        } catch {
-            if ($null -ne $oldStandaloneBackup -and (Test-Path -LiteralPath $oldStandaloneBackup)) {
-                if (Test-Path -LiteralPath $visibleBinDir) {
-                    Remove-Item -LiteralPath $visibleBinDir -Recurse -Force
-                }
-                Move-Item -LiteralPath $oldStandaloneBackup -Destination $visibleBinDir
-            }
-            throw
-        }
-        if ($null -ne $oldStandaloneBackup) {
-            Remove-Item -LiteralPath $oldStandaloneBackup -Recurse -Force
-        }
-    }
-} finally {
-    Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
-}
-if ($guardRejected -or $daemonOnly) { return }
+        $script:Cf.VisibleBackup = $oldStandaloneBackup
+        Save-CodefxJournal
+        Ensure-Junction -LinkPath $visibleBinDir -TargetPath $currentBinDir -InstallerOwnedTargetPrefix $standaloneRoot
+        Test-VisibleCodexCommand -VisibleBinDir $visibleBinDir
+        Update-CodefxDaemon
+        if ($guardRejected -or $daemonOnly) { return }
 
 Maybe-HandleConflictingInstall -Conflict $conflictingInstall
 
@@ -1268,6 +1490,13 @@ if ($prioritizeVisibleBin) {
 Write-Step "Current PowerShell session: codex"
 Write-Step "Future PowerShell windows: open a new PowerShell window and run: codex"
 Write-Host "Codefx CLI $resolvedVersion installed successfully."
+
+        Test-VisibleCodexCommand -VisibleBinDir $visibleBinDir
+    }
+} finally {
+    Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
+}
+if ($guardRejected -or $daemonOnly) { return }
 
 $codexCommand = Join-Path $visibleBinDir "codex.exe"
 if (Prompt-YesNo "Start Codex now?") {
