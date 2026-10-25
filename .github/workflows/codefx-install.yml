@@ -37,8 +37,8 @@ jobs:
       - name: Native Windows transactions on PowerShell 5.1
         if: runner.os == 'Windows'
         shell: powershell
-        run: ./scripts/install/test_install_windows.ps1
+        run: ./.github/scripts/codefx-windows-standard-user.ps1 -Mode transactions -Engine powershell
       - name: Native Windows transactions on PowerShell 7
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/install/test_install_windows.ps1
+        run: ./.github/scripts/codefx-windows-standard-user.ps1 -Mode transactions -Engine pwsh

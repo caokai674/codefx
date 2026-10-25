@@ -53,6 +53,8 @@ Linux / macOS 请求进程响应 SIGTERM。Windows 请求有窗口的程序正�
 
 Linux / macOS 默认入口是 `~/.local/bin/codex`，可用绝对路径 `CODEX_INSTALL_DIR` 修改。Shell 配置会将该目录置于 PATH 前方；当前终端需按脚本输出更新 PATH，或打开新终端。Shell alias、function 和命令缓存需要在使用它们的终端中检查。
 
+Windows 独立 daemon 的迁移应从非管理员 PowerShell 运行；安装器会在停止旧进程前检查该条件。
+
 Windows 默认入口是 `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`，使用 junction 进行选择，更新用户 PATH，并由入口脚本更新当前 PowerShell 的 PATH。支持 Windows PowerShell 5.1 和 PowerShell 7。Windows 合并 PATH 时系统项先于用户项，系统级旧命令可能仍被新终端优先选中；安装器会检测并报告实际冲突，提供新程序的完整路径。它也会提示当前会话中的 alias、function 等遮蔽。使用 `Get-Command codex -All` 排查，按原包管理器的方式处理系统级旧命令。
 
 自定义原生安装、系统包管理器拥有的文件和管理员安装会保留。Windows 的可识别旧版原生平铺目录会在新包验证后整体备份，再切换入口；空目录也可直接使用并在失败时恢复。含其他文件的未知目录或不受支持的 reparse point 会保留并提示处理。自定义命令目录必须位于安装器管理的包目录之外。

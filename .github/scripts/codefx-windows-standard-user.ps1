@@ -1,0 +1,88 @@
+# Run Windows installation checks as a disposable, non-administrator CI user.
+# This helper is for an ephemeral GitHub-hosted runner only.
+[CmdletBinding()]
+param(
+    [ValidateSet('transactions','smoke')][string]$Mode = 'smoke',
+    [ValidateSet('powershell','pwsh')][string]$Engine = 'pwsh'
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:OS -ne 'Windows_NT') {
+    throw 'Use this helper only on a disposable GitHub-hosted Windows runner.'
+}
+$user = 'cfx_' + [guid]::NewGuid().ToString('N').Substring(0, 10)
+$password = 'Cfx!9a' + [guid]::NewGuid().ToString('N')
+$root = Join-Path $env:RUNNER_TEMP $user
+$created = $false
+$child = $null
+$result = 1
+try {
+    $null = & net.exe user $user $password /add /expires:never 2>&1
+    if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated CI account.' }
+    $created = $true
+    New-Item -ItemType Directory -Path (Join-Path $root 'source'), (Join-Path $root 'temp') | Out-Null
+    Copy-Item -Path (Join-Path $PSScriptRoot '../../scripts/install/*') -Destination (Join-Path $root 'source')
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    $variables = @{}
+    foreach ($name in @('Path','RELEASE_TAG','EXPECTED_TARGET','CODEFX_GITHUB_REPO','CODEFX_INSTALL_REF','CODEFX_GITHUB_TOKEN')) {
+        $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if ($null -ne $value) { $variables[$name] = $value }
+    }
+    [IO.File]::WriteAllText((Join-Path $root 'environment.json'), ($variables | ConvertTo-Json), $utf8)
+    $scriptName = if ($Mode -eq 'smoke') { 'smoke_install_windows.ps1' } else { 'test_install_windows.ps1' }
+    $launcher = @'
+param([string]$Root, [string]$ScriptName)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$result = 1
+try {
+    $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'CI child still has administrator privileges.' }
+    $variables = Get-Content -LiteralPath (Join-Path $Root 'environment.json') -Raw | ConvertFrom-Json
+    foreach ($property in $variables.PSObject.Properties) { [Environment]::SetEnvironmentVariable($property.Name, [string]$property.Value, 'Process') }
+    $env:TEMP = Join-Path $Root 'temp'; $env:TMP = $env:TEMP
+    $env:CODEFX_TEST_ROOT = $Root
+    $env:CODEX_NON_INTERACTIVE = '1'
+    Set-Location (Join-Path $Root 'source')
+    & (Join-Path $Root "source\$ScriptName")
+    if ($LASTEXITCODE -ne 0) { throw "CI script exited $LASTEXITCODE" }
+    $result = 0
+} catch { Write-Error -ErrorAction Continue ($_ | Out-String) }
+exit $result
+'@
+    [IO.File]::WriteAllText((Join-Path $root 'launch.ps1'), $launcher, $utf8)
+    # Limit access to this test account and the runner administrator/SYSTEM.
+    $sid = (New-Object Security.Principal.NTAccount($env:COMPUTERNAME, $user)).Translate([Security.Principal.SecurityIdentifier]).Value
+    $null = & icacls.exe $root /inheritance:r /grant:r "*${sid}:(OI)(CI)M" '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /T /Q 2>&1
+    if ($LASTEXITCODE -ne 0) { throw 'Could not protect the isolated CI directory.' }
+    $executable = (Get-Command ($Engine + '.exe') -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    $credential = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$user", (ConvertTo-SecureString $password -AsPlainText -Force))
+    $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $root 'launch.ps1') + '" "' + $root + '" "' + $scriptName + '"'
+    $child = Start-Process -FilePath $executable -ArgumentList $arguments -Credential $credential -LoadUserProfile -WorkingDirectory $root -PassThru -RedirectStandardOutput (Join-Path $root 'stdout.log') -RedirectStandardError (Join-Path $root 'stderr.log')
+    if (-not $child.WaitForExit(600000)) { throw 'Non-administrator Windows checks timed out.' }
+    $child.Refresh()
+    $result = $child.ExitCode
+} finally {
+    if ($null -ne $child) {
+        if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit() }
+        $child.Dispose()
+    }
+    foreach ($file in @('stdout.log','stderr.log')) {
+        $log = Join-Path $root $file
+        if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log | ForEach-Object { Write-Host $_ } }
+    }
+    # Terminate only processes owned by this disposable account before retiring it.
+    if ($created) {
+        Get-CimInstance Win32_Process | ForEach-Object {
+            $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue
+            if ($null -ne $owner -and $owner.ReturnValue -eq 0 -and $owner.User -ceq $user) {
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+        }
+        $null = & net.exe user $user /delete 2>&1
+    }
+    $secret = Join-Path $root 'environment.json'
+    if (Test-Path -LiteralPath $secret) { Remove-Item -LiteralPath $secret -Force }
+}
+if ($result -ne 0) { throw "Non-administrator $Engine $Mode checks failed (exit $result)." }
+Write-Host "Non-administrator $Engine $Mode checks passed."

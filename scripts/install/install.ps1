@@ -1088,8 +1088,27 @@ function Save-CodefxPath {
     Save-CodefxJournal
 }
 
+function Test-CodefxDaemonInstalled {
+    if (Test-Path -LiteralPath (Join-Path $codexHome 'packages\app-server-daemon\current')) { return $true }
+    foreach ($name in @('app-server.pid','app-server.stderr.log','app-server-updater.pid','app-server-updater.stderr.log')) {
+        if (Test-Path -LiteralPath (Join-Path $codexHome "app-server-daemon\$name")) { return $true }
+    }
+    return $false
+}
+
+function Assert-CodefxDaemonContext {
+    if ((Test-CodefxGuardedUpdate) -or $KeepDaemon -or -not (Test-CodefxDaemonInstalled)) { return }
+    # The daemon rejects an elevated launcher. Check before stopping the old
+    # runtime, because it must remain possible to restart it during rollback.
+    $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw 'Migrate the Windows daemon from a non-elevated terminal so it can restart safely. The original installation is retained.'
+    }
+}
+
 function Start-CodefxTransaction {
     if ($script:Cf.Prepared) { return }
+    Assert-CodefxDaemonContext
     $active = @()
     if (-not (Test-CodefxGuardedUpdate)) {
         $active = @(Get-CodefxProcesses)
@@ -1227,9 +1246,7 @@ function Update-CodefxVersionCache {
 
 function Update-CodefxDaemon {
     if ((Test-CodefxGuardedUpdate) -or $KeepDaemon) { return }
-    $legacyEvidence = @('app-server.pid','app-server.stderr.log','app-server-updater.pid','app-server-updater.stderr.log') |
-        Where-Object { Test-Path -LiteralPath (Join-Path $codexHome "app-server-daemon\$_") }
-    if ((Test-Path -LiteralPath (Join-Path $codexHome 'packages\app-server-daemon\current')) -or $script:Cf.RestartCli -or @($legacyEvidence).Count -gt 0) {
+    if ((Test-CodefxDaemonInstalled) -or $script:Cf.RestartCli) {
         $newCli = Join-Path $visibleBinDir 'codex.exe'
         $script:Cf.MigrationAttempted = $true
         Save-CodefxJournal
