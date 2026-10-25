@@ -1,0 +1,29 @@
+name: Codefx installer safety
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - scripts/install/**
+      - .github/workflows/codefx-install.yml
+  pull_request:
+    paths:
+      - scripts/install/**
+      - .github/workflows/codefx-install.yml
+permissions:
+  contents: read
+jobs:
+  installers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Shell replacement regression tests
+        run: |
+          sh -n scripts/install/install.sh scripts/install/install-codefx.sh
+          python3 -m unittest discover -s scripts/install -p test_install_sh.py -v
+      - name: PowerShell bootstrap and identity checks
+        shell: pwsh
+        run: ./scripts/install/test_install_ps1.ps1
