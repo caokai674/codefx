@@ -1,4 +1,4 @@
-<p align="center"><strong>Codefx CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
+<p align="center"><strong>Codefx CLI</strong> is a fork of OpenAI Codex CLI with resilient retries and Codefx release updates.
 <p align="center">
   <img src="https://github.com/caokai674/codefx/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
 </p>
@@ -19,12 +19,14 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 | --- | --- | --- |
 | Linux x86_64 / ARM64 (musl) | Published | Passed |
 | macOS Apple Silicon | Published | Passed |
-| Windows x64 | Published | Installation and repeat installation passed; daemon validation in progress |
-| macOS Intel / Windows ARM64 | Building | Pending |
+| Windows x64 / ARM64 | Published | Passed |
+| macOS Intel | Building | Pending |
 
 One-command replacement instructions are paused while the complete platform validation finishes. Keep your existing Codex installation. The revised installers validate the package before changing commands and retain existing package-manager registrations.
 
-[Installer source and recovery guide](docs/codefx-installer.md) · [Native package build progress](https://github.com/hitmux/codefx/actions/runs/40152919968)
+The original `rust-v0.164.0` source archive retains historical wrappers that uninstall old packages before downloading. Use the independently maintained revised installers only after validation completes.
+
+[Installer source and recovery guide](docs/codefx-installer.md) · [Native package build progress](https://github.com/hitmux/codefx/actions/runs/40152919968) · [Three-platform safety checks](https://github.com/hitmux/codefx/actions/runs/40169307946) · [Windows ARM64 installation and daemon checks](https://github.com/hitmux/codefx/actions/runs/40169286206)
 
 ### Using Codex with your ChatGPT plan
 
