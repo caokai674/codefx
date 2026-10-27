@@ -18,7 +18,7 @@ concurrency:
 jobs:
   prepare:
     runs-on: ubuntu-24.04
-    permissions: {contents: read, actions: write}
+    permissions: { contents: read, actions: write }
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.tag }}
@@ -40,18 +40,18 @@ jobs:
   platforms:
     needs: prepare
     if: github.repository == 'hitmux/codefx'
-    permissions: {contents: write, actions: write}
+    permissions: { contents: write, actions: write }
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
         include:
-          - {runner: ubuntu-24.04, target: x86_64-unknown-linux-musl}
-          - {runner: macos-15, target: aarch64-apple-darwin}
-          - {runner: windows-2025, target: x86_64-pc-windows-msvc}
-          - {runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl}
-          - {runner: macos-15-intel, target: x86_64-apple-darwin}
-          - {runner: windows-11-arm, target: aarch64-pc-windows-msvc}
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-musl }
+          - { runner: macos-15, target: aarch64-apple-darwin }
+          - { runner: windows-2025, target: x86_64-pc-windows-msvc }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin }
+          - { runner: windows-11-arm, target: aarch64-pc-windows-msvc }
     uses: ./.github/workflows/codefx-native-package.yml
     with:
       tag: ${{ inputs.tag }}
@@ -61,7 +61,7 @@ jobs:
   manifest:
     needs: platforms
     runs-on: ubuntu-24.04
-    permissions: {contents: write}
+    permissions: { contents: write }
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.tag }}
@@ -89,13 +89,13 @@ jobs:
   installers:
     needs: smoke
     runs-on: ubuntu-24.04
-    permissions: {contents: write}
+    permissions: { contents: write }
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with: {persist-credentials: false}
+        with: { persist-credentials: false }
       - name: Publish immutable installer bundle after all native checks pass
         shell: bash
         run: |

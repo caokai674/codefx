@@ -16,16 +16,16 @@
 
 ## 参数
 
-| 目的 | Linux / macOS | Windows |
-| --- | --- | --- |
-| 查看计划，保持安装不变 | `--dry-run` | `-DryRun` |
-| 指定版本 | `--release 0.165.0` | `-Release 0.165.0` |
-| 请求运行中的会话正常退出 | `--stop-running` | `-StopRunning` |
-| 等待当前会话自行退出 | `--defer-until-idle` | `-DeferUntilIdle` |
-| 空闲等待上限（秒） | `CODEFX_IDLE_WAIT_TIMEOUT=900` | `-IdleWaitTimeout 900` |
-| 保留独立 daemon 的包与更新设置 | `--keep-daemon` | `-KeepDaemon` |
-| 进程操作超时 | `CODEFX_PROCESS_TIMEOUT=30` | `-ProcessTimeout 30` |
-| 等待安装锁的上限 | `CODEFX_LOCK_TIMEOUT=120` | `-LockTimeout 120` |
+| 目的                           | Linux / macOS                  | Windows                |
+| ------------------------------ | ------------------------------ | ---------------------- |
+| 查看计划，保持安装不变         | `--dry-run`                    | `-DryRun`              |
+| 指定版本                       | `--release 0.165.0`            | `-Release 0.165.0`     |
+| 请求运行中的会话正常退出       | `--stop-running`               | `-StopRunning`         |
+| 等待当前会话自行退出           | `--defer-until-idle`           | `-DeferUntilIdle`      |
+| 空闲等待上限（秒）             | `CODEFX_IDLE_WAIT_TIMEOUT=900` | `-IdleWaitTimeout 900` |
+| 保留独立 daemon 的包与更新设置 | `--keep-daemon`                | `-KeepDaemon`          |
+| 进程操作超时                   | `CODEFX_PROCESS_TIMEOUT=30`    | `-ProcessTimeout 30`   |
+| 等待安装锁的上限               | `CODEFX_LOCK_TIMEOUT=120`      | `-LockTimeout 120`     |
 
 进程超时允许 1–300 秒，安装锁等待允许 1–600 秒，空闲等待允许 1–3600 秒。`--defer-until-idle` 与 `--stop-running` 互斥；Windows 同理。默认安装最新正式版；显式指定版本会固定版本，取消该安装的自动跟随 latest 设置。
 

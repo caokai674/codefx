@@ -2,12 +2,12 @@ name: Codefx native installation smoke
 on:
   workflow_dispatch:
     inputs:
-      tag: {type: string, required: true, default: rust-v0.165.0}
-      targets: {type: string, required: false, default: all}
+      tag: { type: string, required: true, default: rust-v0.165.0 }
+      targets: { type: string, required: false, default: all }
   workflow_call:
     inputs:
-      tag: {type: string, required: true}
-      targets: {type: string, required: false, default: all}
+      tag: { type: string, required: true }
+      targets: { type: string, required: false, default: all }
 permissions:
   contents: read
 jobs:
@@ -55,10 +55,10 @@ jobs:
       CODEFX_GITHUB_REPO: hitmux/codefx
       CODEFX_INSTALL_REF: ${{ github.sha }}
       CODEFX_GITHUB_TOKEN: ${{ github.token }}
-      CODEX_NON_INTERACTIVE: '1'
+      CODEX_NON_INTERACTIVE: "1"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with: {persist-credentials: false}
+        with: { persist-credentials: false }
       - name: Install published package through the public bootstrap
         if: runner.os != 'Windows'
         shell: bash

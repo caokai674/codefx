@@ -24,12 +24,12 @@ jobs:
     timeout-minutes: 120
     env:
       TARGET: x86_64-unknown-linux-musl
-      CARGO_BUILD_JOBS: '2'
-      CARGO_PROFILE_RELEASE_DEBUG: '0'
-      CARGO_PROFILE_RELEASE_LTO: 'false'
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
-      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
-      AWS_LC_SYS_NO_JITTER_ENTROPY: '1'
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      AWS_LC_SYS_NO_JITTER_ENTROPY: "1"
       CODEX_REPO_ROOT: ${{ github.workspace }}
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
