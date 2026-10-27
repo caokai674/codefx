@@ -130,7 +130,6 @@ members = [
     "utils/cache",
     "utils/critical-path",
     "utils/git-discovery",
-    "utils/head-tail-buffer",
     "utils/image",
     "utils/json-to-toml",
     "utils/home-dir",
@@ -167,7 +166,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.0.0"
+version = "0.165.0"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -306,7 +305,6 @@ codex-utils-critical-path = { path = "utils/critical-path" }
 codex-utils-elapsed = { path = "utils/elapsed" }
 codex-utils-fuzzy-match = { path = "utils/fuzzy-match" }
 codex-utils-git-discovery = { path = "utils/git-discovery" }
-codex-utils-head-tail-buffer = { path = "utils/head-tail-buffer" }
 codex-utils-home-dir = { path = "utils/home-dir" }
 codex-utils-image = { path = "utils/image" }
 codex-utils-json-to-toml = { path = "utils/json-to-toml" }

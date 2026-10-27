@@ -73,7 +73,6 @@ use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
 
 mod archive;
-mod catalog;
 mod layout;
 mod page_loading;
 
@@ -759,26 +758,16 @@ fn spawn_app_server_page_loader(
     tokio::spawn(async move {
         let mut app_server = app_server;
         let mut page_cwd_filter = PageCwdFilter::default();
-        let mut catalog = catalog::ThreadCatalog::default();
         while let Some(request) = request_rx.recv().await {
             match request {
                 PickerLoadRequest::Page(request) => {
-                    if request.cursor.is_none() {
-                        catalog.reset();
-                    }
-                    let Some(catalog_request) = catalog.begin_page(app_server.backend_id()) else {
-                        continue;
-                    };
                     let cwd_filter = page_cwd_filter.for_request(
                         request.cursor.as_ref(),
                         request.cwd_filter.as_deref(),
                         request.filter_mode,
                         uses_remote_filesystem,
                     );
-                    let cursor = catalog_request
-                        .cursor
-                        .clone()
-                        .map(|PageCursor::AppServer(cursor)| cursor);
+                    let cursor = request.cursor.map(|PageCursor::AppServer(cursor)| cursor);
                     let params = thread_list_params(
                         cursor,
                         cwd_filter,
@@ -789,9 +778,6 @@ fn spawn_app_server_page_loader(
                         matches!(request.mode, PageLoadMode::StateDbOnly),
                     );
                     let page = load_app_server_page(&mut app_server, params).await;
-                    let Some(page) = catalog.finish_page(catalog_request, page) else {
-                        continue;
-                    };
                     let _ = bg_tx.send(BackgroundEvent::Page {
                         request_token: request.request_token,
                         search_token: request.search_token,
@@ -914,6 +900,7 @@ struct PickerState {
     pagination: PaginationState,
     all_rows: Vec<Row>,
     filtered_rows: Vec<Row>,
+    thread_history_modes: HashMap<ThreadId, ThreadHistoryMode>,
     seen_rows: HashSet<SeenRowKey>,
     selected: usize,
     scroll_top: usize,
@@ -1033,8 +1020,6 @@ impl SearchState {
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
 struct Row {
-    backend_id: Option<crate::backend_id::BackendId>,
-    history_mode: Option<ThreadHistoryMode>,
     path: Option<PathBuf>,
     preview: String,
     thread_id: Option<ThreadId>,
@@ -1118,6 +1103,7 @@ impl PickerState {
             pagination: PaginationState::new(),
             all_rows: Vec::new(),
             filtered_rows: Vec::new(),
+            thread_history_modes: HashMap::new(),
             seen_rows: HashSet::new(),
             selected: 0,
             scroll_top: 0,
@@ -1262,6 +1248,7 @@ impl PickerState {
             self.request_frame();
             return;
         };
+
         match self.transcript_cells.get(&thread_id) {
             Some(SessionTranscriptState::Loaded(_)) => {
                 self.begin_transcript_loading(thread_id);
@@ -1389,11 +1376,11 @@ impl PickerState {
                             return Ok(None);
                         }
                         return Ok(Some(self.action.selection(SessionTarget {
-                            backend_id: row.backend_id.unwrap_or(self.backend_id),
+                            backend_id: self.backend_id,
                             path,
                             thread_id,
                             cwd: row.cwd.clone(),
-                            history_mode: row.history_mode,
+                            history_mode: self.thread_history_modes.get(&thread_id).copied(),
                         })));
                     }
                     self.inline_error = Some(match path {
@@ -1530,6 +1517,7 @@ impl PickerState {
         self.reset_pagination();
         self.all_rows.clear();
         self.filtered_rows.clear();
+        self.thread_history_modes.clear();
         self.seen_rows.clear();
         self.local_cwd_matches.clear();
         self.selected = 0;
@@ -1685,10 +1673,9 @@ impl PickerState {
         } = page;
         self.pagination
             .complete_page(next_cursor, num_scanned_files, reached_scan_cap);
-        for mut row in rows {
-            if let Some(thread_id) = row.thread_id {
-                row.history_mode = history_modes.get(&thread_id).copied();
-            }
+        self.thread_history_modes.extend(history_modes);
+
+        for row in rows {
             if let Some(cwd) = row.cwd.as_ref()
                 && !self.local_cwd_matches.contains_key(cwd)
             {
@@ -1696,15 +1683,8 @@ impl PickerState {
                 self.local_cwd_matches.insert(cwd.clone(), matches);
             }
             if let Some(seen_key) = row.seen_key() {
-                if self.seen_rows.insert(seen_key.clone()) {
+                if self.seen_rows.insert(seen_key) {
                     self.all_rows.push(row);
-                } else if let Some(existing) = self.all_rows.iter_mut().find(|existing| {
-                    existing.seen_key().as_ref() == Some(&seen_key)
-                        && existing.backend_id == row.backend_id
-                        && existing.thread_id == row.thread_id
-                }) {
-                    // Preserve the pre-catalog behavior where metadata from a later page wins.
-                    existing.history_mode = row.history_mode;
                 }
             } else {
                 self.all_rows.push(row);
@@ -2153,8 +2133,6 @@ fn row_from_app_server_thread(thread: Thread) -> Option<Row> {
     };
     let preview = thread.preview.trim();
     Some(Row {
-        backend_id: None,
-        history_mode: None,
         path: thread.path,
         preview: if preview.is_empty() {
             String::from("(no message yet)")
@@ -3721,7 +3699,7 @@ mod tests {
     use std::sync::Mutex;
     use tempfile::tempdir;
 
-    pub(super) fn page(
+    fn page(
         rows: Vec<Row>,
         next_cursor: Option<&str>,
         num_scanned_files: usize,
@@ -3764,11 +3742,9 @@ mod tests {
         Ok(page(rows, next_cursor, n, /*reached_scan_cap*/ false))
     }
 
-    pub(super) fn make_row(path: &str, ts: &str, preview: &str) -> Row {
+    fn make_row(path: &str, ts: &str, preview: &str) -> Row {
         let timestamp = parse_timestamp_str(ts).expect("timestamp should parse");
         Row {
-            backend_id: None,
-            history_mode: None,
             path: Some(PathBuf::from(path)),
             preview: preview.to_string(),
             thread_id: None,
@@ -3780,7 +3756,7 @@ mod tests {
         }
     }
 
-    pub(super) fn local_db_first_state() -> (PickerState, Arc<Mutex<Vec<PageLoadRequest>>>) {
+    fn local_db_first_state() -> (PickerState, Arc<Mutex<Vec<PageLoadRequest>>>) {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let request_sink = Arc::clone(&requests);
         let loader = page_only_loader(move |request| {
@@ -3831,7 +3807,7 @@ mod tests {
             .join("\n")
     }
 
-    pub(super) fn render_picker_list(state: &PickerState, width: u16, height: u16) -> String {
+    fn render_picker_list(state: &PickerState, width: u16, height: u16) -> String {
         use crate::custom_terminal::Terminal;
         use crate::test_backend::VT100Backend;
 
@@ -3850,8 +3826,6 @@ mod tests {
     #[test]
     fn row_display_preview_prefers_thread_name() {
         let row = Row {
-            backend_id: None,
-            history_mode: None,
             path: Some(PathBuf::from("/tmp/a.jsonl")),
             preview: String::from("first message"),
             thread_id: None,
@@ -4207,7 +4181,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_db_first_accepts_db_thread_id_and_latest_history_mode() {
+    async fn local_db_first_accepts_db_thread_id_without_rollout_validation() {
         let (mut state, requests) = local_db_first_state();
         state.start_initial_load();
         let db_request = requests.lock().unwrap()[0].clone();
@@ -4226,20 +4200,6 @@ mod tests {
             .insert(thread_id, ThreadHistoryMode::Legacy);
         deliver_page(&mut state, &db_request, Ok(listed_page)).await;
 
-        let mut updated_row = make_row(
-            "/tmp/missing-rollout.jsonl",
-            "2025-01-02T00:00:00Z",
-            "updated indexed metadata",
-        );
-        updated_row.thread_id = Some(thread_id);
-        updated_row.cwd = Some(PathBuf::from("/tmp/saved-cwd"));
-        let mut updated_page = ok_page(vec![updated_row], /*next_cursor*/ None)
-            .expect("updated indexed thread page should be available");
-        updated_page
-            .history_modes
-            .insert(thread_id, ThreadHistoryMode::Paginated);
-        state.ingest_page(updated_page);
-
         let selection = state
             .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await
@@ -4249,7 +4209,7 @@ mod tests {
             Some(SessionSelection::Resume(SessionTarget {
                 thread_id: selected_thread_id,
                 cwd: Some(cwd),
-                history_mode: Some(ThreadHistoryMode::Paginated),
+                history_mode: Some(ThreadHistoryMode::Legacy),
                 ..
             })) if selected_thread_id == thread_id && cwd == Path::new("/tmp/saved-cwd")
         ));
@@ -4260,8 +4220,6 @@ mod tests {
         let thread_id =
             ThreadId::from_string("019dabc1-0ef5-7431-b81c-03037f51f62c").expect("thread id");
         let row = Row {
-            backend_id: None,
-            history_mode: None,
             path: Some(PathBuf::from("/tmp/a.jsonl")),
             preview: String::from("first message"),
             thread_id: Some(thread_id),
@@ -4324,8 +4282,6 @@ mod tests {
         state.clock_format = ClockFormat::TwentyFourHour;
         state.relative_time_reference = parse_timestamp_str("2026-05-02T14:48:19Z");
         let row = Row {
-            backend_id: None,
-            history_mode: None,
             path: Some(PathBuf::from("/tmp/a.jsonl")),
             preview: String::from("first message"),
             thread_id: Some(thread_id),
@@ -4574,8 +4530,6 @@ mod tests {
         }
 
         let row = Row {
-            backend_id: None,
-            history_mode: None,
             path: None,
             preview: String::from("remote session"),
             thread_id: Some(ThreadId::new()),
@@ -4602,8 +4556,6 @@ mod tests {
             SessionPickerAction::Resume,
         );
         let row = Row {
-            backend_id: None,
-            history_mode: None,
             path: None,
             preview: String::from("remote session"),
             thread_id: Some(ThreadId::new()),
@@ -4633,8 +4585,6 @@ mod tests {
         let now = parse_timestamp_str("2026-04-28T16:30:00Z").expect("timestamp");
         let rows = vec![
             Row {
-                backend_id: None,
-                history_mode: None,
                 path: Some(PathBuf::from("/tmp/a.jsonl")),
                 preview: String::from("Fix resume picker timestamps"),
                 thread_id: None,
@@ -4645,8 +4595,6 @@ mod tests {
                 git_branch: None,
             },
             Row {
-                backend_id: None,
-                history_mode: None,
                 path: Some(PathBuf::from("/tmp/b.jsonl")),
                 preview: String::from("Investigate lazy pagination cap"),
                 thread_id: None,
@@ -4657,8 +4605,6 @@ mod tests {
                 git_branch: None,
             },
             Row {
-                backend_id: None,
-                history_mode: None,
                 path: Some(PathBuf::from("/tmp/c.jsonl")),
                 preview: String::from("Explain the codebase"),
                 thread_id: None,
@@ -5100,8 +5046,6 @@ mod tests {
             SessionPickerAction::Resume,
         );
         state.filtered_rows = vec![Row {
-            backend_id: None,
-            history_mode: None,
             path: None,
             preview: String::from("preview"),
             thread_id: Some(thread_id),
@@ -5141,8 +5085,6 @@ mod tests {
         );
         state.filtered_rows = vec![
             Row {
-                backend_id: None,
-                history_mode: None,
                 path: None,
                 preview: String::from("one"),
                 thread_id: Some(ThreadId::new()),
@@ -5153,8 +5095,6 @@ mod tests {
                 git_branch: None,
             },
             Row {
-                backend_id: None,
-                history_mode: None,
                 path: None,
                 preview: String::from("two"),
                 thread_id: Some(ThreadId::new()),
@@ -5282,8 +5222,6 @@ mod tests {
         state.pending_transcript_open = Some(thread_id);
         state.filtered_rows = vec![
             Row {
-                backend_id: None,
-                history_mode: None,
                 path: None,
                 preview: String::from("Find pending threads and emails"),
                 thread_id: Some(thread_id),
@@ -5294,8 +5232,6 @@ mod tests {
                 git_branch: None,
             },
             Row {
-                backend_id: None,
-                history_mode: None,
                 path: None,
                 preview: String::from("Plan raw scrollback mode"),
                 thread_id: Some(ThreadId::new()),
@@ -5352,8 +5288,6 @@ mod tests {
             SessionPickerAction::Resume,
         );
         state.filtered_rows = vec![Row {
-            backend_id: None,
-            history_mode: None,
             path: None,
             preview: String::from("preview"),
             thread_id: Some(thread_id),
@@ -5385,8 +5319,6 @@ mod tests {
             SessionPickerAction::Resume,
         );
         state.filtered_rows = vec![Row {
-            backend_id: None,
-            history_mode: None,
             path: Some(PathBuf::from("/tmp/a.jsonl")),
             preview: String::from("preview"),
             thread_id: None,
@@ -5530,8 +5462,6 @@ mod tests {
             SessionPickerAction::Resume,
         );
         state.filtered_rows = vec![Row {
-            backend_id: None,
-            history_mode: None,
             path: None,
             preview: String::from("preview"),
             thread_id: Some(thread_id),
@@ -5701,8 +5631,6 @@ session_picker_view = "dense"
             SessionPickerAction::Resume,
         );
         state.filtered_rows = vec![Row {
-            backend_id: None,
-            history_mode: None,
             path: None,
             preview: String::from("preview"),
             thread_id: Some(thread_id),
@@ -5743,8 +5671,6 @@ session_picker_view = "dense"
             SessionPickerAction::Resume,
         );
         state.filtered_rows = vec![Row {
-            backend_id: None,
-            history_mode: None,
             path: None,
             preview: String::from("preview"),
             thread_id: Some(thread_id),
@@ -5821,8 +5747,6 @@ session_picker_view = "dense"
 
     fn dense_snapshot_row() -> Row {
         Row {
-            backend_id: None,
-            history_mode: None,
             path: Some(PathBuf::from("/tmp/a.jsonl")),
             preview: String::from(
                 "Propose session picker redesign with enough title text to exercise truncation",
@@ -6059,8 +5983,6 @@ session_picker_view = "dense"
         let thread_id =
             ThreadId::from_string("019dabc1-0ef5-7431-b81c-03037f51f62c").expect("thread id");
         let row = Row {
-            backend_id: None,
-            history_mode: None,
             path: Some(PathBuf::from("/tmp/a.jsonl")),
             preview: String::from("Investigate picker expansion"),
             thread_id: Some(thread_id),
@@ -6132,8 +6054,6 @@ session_picker_view = "dense"
 
         let loader = page_only_loader(|_| {});
         let row = Row {
-            backend_id: None,
-            history_mode: None,
             path: Some(PathBuf::from("/tmp/a.jsonl")),
             preview: String::from("Investigate picker expansion"),
             thread_id: Some(
@@ -6196,8 +6116,6 @@ session_picker_view = "dense"
         let now = parse_timestamp_str("2026-04-28T16:30:00Z").expect("timestamp");
         state.all_rows = (0..5)
             .map(|idx| Row {
-                backend_id: None,
-                history_mode: None,
                 path: Some(PathBuf::from(format!("/tmp/{idx}.jsonl"))),
                 preview: format!("item-{idx}"),
                 thread_id: None,
@@ -6251,8 +6169,6 @@ session_picker_view = "dense"
         let now = parse_timestamp_str("2026-04-28T16:30:00Z").expect("timestamp");
         state.all_rows = (0..4)
             .map(|idx| Row {
-                backend_id: None,
-                history_mode: None,
                 path: Some(PathBuf::from(format!("/tmp/{idx}.jsonl"))),
                 preview: format!("item-{idx}"),
                 thread_id: None,
@@ -6851,8 +6767,6 @@ session_picker_view = "dense"
         );
 
         let row = Row {
-            backend_id: None,
-            history_mode: None,
             path: Some(PathBuf::from("/tmp/missing.jsonl")),
             preview: String::from("missing metadata"),
             thread_id: None,
@@ -6893,8 +6807,6 @@ session_picker_view = "dense"
         );
         let thread_id = ThreadId::new();
         let row = Row {
-            backend_id: None,
-            history_mode: None,
             path: None,
             preview: String::from("pathless thread"),
             thread_id: Some(thread_id),

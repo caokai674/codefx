@@ -8,7 +8,7 @@ on:
         description: Existing Codefx release tag
         type: string
         required: true
-        default: rust-v0.164.0
+        default: rust-v0.165.0
 
 permissions:
   contents: read

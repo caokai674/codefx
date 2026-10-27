@@ -2,7 +2,7 @@ name: Codefx native installation smoke
 on:
   workflow_dispatch:
     inputs:
-      tag: {type: string, required: true, default: rust-v0.164.0}
+      tag: {type: string, required: true, default: rust-v0.165.0}
       targets: {type: string, required: false, default: all}
   workflow_call:
     inputs:

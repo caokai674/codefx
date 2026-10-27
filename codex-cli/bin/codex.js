@@ -96,7 +96,7 @@ function findCodexExecutable() {
   }
 
   const updateCommand =
-    "curl -fsSL https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.sh | sh";
+    "curl -fsSL https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.sh | sh";
   throw new Error(
     `Missing optional dependency ${platformPackage}. Reinstall Codex: ${updateCommand}`,
   );

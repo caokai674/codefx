@@ -4,8 +4,8 @@ expression: rendered
 ---
 ╭─────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✨ Update available! 0.0.0 -> 9.9.9                                                                 │
-│ Run sh -c 'curl -fsSL https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.sh | CODEFX_REPLACE_OFFICIAL=1 CODEX_NON_INTERACTIVE=1 sh' to update. │
+│ Run sh -c 'curl -fsSL https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.sh | CODEFX_REPLACE_OFFICIAL=1 CODEX_NON_INTERACTIVE=1 sh' to update. │
 │                                                                                                     │
 │ See full release notes:                                                                             │
-│ https://github.com/caokai674/codefx/releases/latest                                                     │
+│ https://github.com/hitmux/codefx/releases/latest                                                     │
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────────╯

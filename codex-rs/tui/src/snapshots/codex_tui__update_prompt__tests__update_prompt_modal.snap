@@ -4,9 +4,9 @@ expression: terminal.backend()
 ---
 
   Update available · 0.0.0 → 9.9.9
-  Release notes: https://github.com/caokai674/codefx/releases/latest
+  Release notes: https://github.com/hitmux/codefx/releases/latest
 
-› 1. Update now (runs `curl -fsSL https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.sh | CODEFX_REPLACE_OFFICIAL=1 CODEX_NON_INTERACTIVE=1 sh`)                           
+› 1. Update now (runs `curl -fsSL https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.sh | CODEFX_REPLACE_OFFICIAL=1 CODEX_NON_INTERACTIVE=1 sh`)                           
   2. Skip
   3. Skip until next version
 

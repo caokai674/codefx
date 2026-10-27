@@ -833,11 +833,6 @@ impl Session {
             .turn_timing_state
             .complete_profile_and_duration_ms()
             .await;
-        crate::turn_timing::record_turn_profile_trace(
-            self.thread_id,
-            &turn_context.sub_id,
-            &profile,
-        );
         self.services
             .analytics_events_client
             .track_turn_profile(TurnProfileFact {
@@ -1041,11 +1036,6 @@ impl Session {
             .turn_timing_state
             .complete_profile_and_duration_ms()
             .await;
-        crate::turn_timing::record_turn_profile_trace(
-            self.thread_id,
-            &task.turn_context.sub_id,
-            &profile,
-        );
         self.services
             .analytics_events_client
             .track_turn_profile(TurnProfileFact {

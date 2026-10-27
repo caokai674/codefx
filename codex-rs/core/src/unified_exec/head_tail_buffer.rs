@@ -1,14 +1,14 @@
-//! A capped byte buffer that preserves a stable prefix and the most recent suffix.
-//! Retained bytes never exceed the caller's const-generic budget.
-
+use crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
+use crate::unified_exec::format_output_omission_marker;
 use std::collections::VecDeque;
 
 /// A capped buffer that preserves a stable prefix ("head") and suffix ("tail"),
 /// dropping the middle once it exceeds the configured maximum. The buffer is
 /// symmetric meaning 50% of the capacity is allocated to the head and 50% is
 /// allocated to the tail.
-#[derive(Debug, Default, Eq, PartialEq)]
-pub struct HeadTailBuffer<const MAX_BYTES: usize> {
+#[derive(Debug, Default)]
+#[cfg_attr(test, derive(Eq, PartialEq))]
+pub(crate) struct HeadTailBuffer<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES> {
     head: Vec<u8>,
     tail: VecDeque<u8>,
     omitted_bytes: usize,
@@ -18,18 +18,22 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
     const HEAD_BUDGET: usize = MAX_BYTES / 2;
     const TAIL_BUDGET: usize = MAX_BYTES.saturating_sub(Self::HEAD_BUDGET);
 
+    // Used for tests.
+    #[allow(dead_code)]
     /// Total bytes currently retained by the buffer (head + tail).
-    pub fn retained_bytes(&self) -> usize {
+    pub(crate) fn retained_bytes(&self) -> usize {
         self.head.len().saturating_add(self.tail.len())
     }
 
+    // Used for tests.
+    #[allow(dead_code)]
     /// Total bytes that were dropped from the middle due to the size cap.
-    pub fn omitted_bytes(&self) -> usize {
+    pub(crate) fn omitted_bytes(&self) -> usize {
         self.omitted_bytes
     }
 
     /// Total bytes observed by the buffer, including bytes omitted by the cap.
-    pub fn total_bytes(&self) -> usize {
+    pub(crate) fn total_bytes(&self) -> usize {
         self.retained_bytes().saturating_add(self.omitted_bytes)
     }
 
@@ -38,7 +42,7 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
     /// Bytes are first added to the head until the head budget is full; any
     /// remaining bytes are added to the tail, with older tail bytes being
     /// dropped to preserve the tail budget.
-    pub fn push_chunk(&mut self, chunk: &[u8]) {
+    pub(crate) fn push_chunk(&mut self, chunk: &[u8]) {
         let chunk = self.fill_head(chunk);
         self.push_tail(chunk);
     }
@@ -90,7 +94,7 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
     ///
     /// The output is formed by concatenating head chunks, then tail chunks.
     /// Omitted bytes are not represented in the returned value.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.retained_bytes());
         out.extend_from_slice(&self.head);
         out.extend(self.tail.iter().copied());
@@ -99,7 +103,7 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
 
     /// Return the retained output with an explicit marker between the head and
     /// tail when bytes were omitted.
-    pub fn to_bytes_with_omission_marker(&self) -> Vec<u8> {
+    pub(crate) fn to_bytes_with_omission_marker(&self) -> Vec<u8> {
         if self.omitted_bytes == 0 {
             return self.to_bytes();
         }
@@ -121,7 +125,7 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
 
     /// Append a later buffer with the same budget. This preserves the summary
     /// of the original concatenated output, including its omission count.
-    pub fn push_buffer(&mut self, buffer: Self) {
+    pub(crate) fn push_buffer(&mut self, buffer: Self) {
         let Self {
             head,
             tail,
@@ -158,11 +162,6 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
             }
         }
     }
-}
-
-/// Render the byte omission notice used by callers of the buffer.
-pub fn format_output_omission_marker(omitted_bytes: usize) -> String {
-    format!("... {omitted_bytes} bytes omitted ...")
 }
 
 #[cfg(test)]

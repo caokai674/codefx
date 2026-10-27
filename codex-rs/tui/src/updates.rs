@@ -55,7 +55,7 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
     })
 }
 
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/caokai674/codefx/releases/latest";
+const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/hitmux/codefx/releases/latest";
 
 #[derive(Deserialize, Debug, Clone)]
 struct ReleaseInfo {

@@ -28,13 +28,13 @@ public class CodefxFixture {
       int count = File.Exists(file) ? int.Parse(File.ReadAllText(file)) + 1 : 1;
       File.WriteAllText(file, count.ToString());
       if (Environment.GetEnvironmentVariable("CODEFX_FIXTURE_FAIL") == "visible" && count == 3) return 73;
-      Console.WriteLine("codefx 0.164.0"); return 0;
+      Console.WriteLine("codefx 0.165.0"); return 0;
     }
     if (Array.IndexOf(args, "update") >= 0 && Environment.GetEnvironmentVariable("CODEFX_FIXTURE_FAIL") == "daemon") return 71;
     string state = Environment.GetEnvironmentVariable("CODEFX_FIXTURE_COUNTER") + ".daemon";
     if (Array.IndexOf(args, "start") >= 0) File.WriteAllText(state, "running");
     if (Array.IndexOf(args, "stop") >= 0 && File.Exists(state)) File.Delete(state);
-    Console.WriteLine(File.Exists(state) ? "{\"status\":\"running\",\"appServerVersion\":\"0.164.0\"}" : "{\"status\":\"notRunning\"}"); return 0;
+    Console.WriteLine(File.Exists(state) ? "{\"status\":\"running\",\"appServerVersion\":\"0.165.0\"}" : "{\"status\":\"notRunning\"}"); return 0;
   }
 }
 "@
@@ -103,7 +103,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
         foreach ($file in @('bin\codex.exe','bin\codex-code-mode-host.exe','codex-path\rg.exe','codex-resources\codex-command-runner.exe','codex-resources\codex-windows-sandbox-setup.exe')) {
             Copy-Item -LiteralPath (Join-Path $root 'new.exe') -Destination (Join-Path $package $file)
         }
-        @{ version='0.164.0'; target=$(if ($case -eq 'target') { 'wrong-target' } else { $target }); entrypoint='bin/codex.exe' } |
+        @{ version='0.165.0'; target=$(if ($case -eq 'target') { 'wrong-target' } else { $target }); entrypoint='bin/codex.exe' } |
             ConvertTo-Json | Set-Content -LiteralPath (Join-Path $package 'codex-package.json')
         $fixture.Archive = Join-Path $caseRoot $asset
         & python $archiveWriter $package $fixture.Archive
@@ -111,7 +111,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
         $fixture.Sums = Join-Path $caseRoot 'codex-package_SHA256SUMS'
         ((Get-FileHash -LiteralPath $fixture.Archive -Algorithm SHA256).Hash.ToLowerInvariant() + "  $asset") |
             Set-Content -LiteralPath $fixture.Sums -Encoding ASCII
-        $fixture.Metadata = @{ tag_name='rust-v0.164.0'; assets=@(
+        $fixture.Metadata = @{ tag_name='rust-v0.165.0'; assets=@(
             @{ name=$asset; digest=('sha256:' + (Get-FileHash $fixture.Archive).Hash.ToLowerInvariant()); browser_download_url="https://fixture.invalid/$asset" },
             @{ name='codex-package_SHA256SUMS'; digest=('sha256:' + (Get-FileHash $fixture.Sums).Hash.ToLowerInvariant()); browser_download_url='https://fixture.invalid/codex-package_SHA256SUMS' }
         ) }
@@ -126,7 +126,7 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
         $env:CODEFX_FIXTURE_COUNTER = Join-Path $caseRoot 'counter'
         $env:CODEFX_FIXTURE_FAIL = if ($case -in @('flat-rollback','empty-rollback')) { 'visible' } else { $case }
         $standalone = Join-Path $env:CODEX_HOME 'packages\standalone'
-        $release = Join-Path $standalone "releases\0.164.0-$target"
+        $release = Join-Path $standalone "releases\0.165.0-$target"
         New-Item -ItemType Directory -Force -Path (Join-Path $release 'bin') | Out-Null
         Copy-Item -LiteralPath (Join-Path $root 'old.exe') -Destination (Join-Path $release 'bin\codex.exe')
         New-Item -ItemType Junction -Path (Join-Path $standalone 'current') -Target $release | Out-Null
@@ -171,11 +171,11 @@ exit /b 1
         $failed = $false
         $downloadsBeforeCase = $fixture.Downloads
         try {
-            if ($case -eq 'active-idle-timeout') { & $base -Release '0.164.0' -DeferUntilIdle -IdleWaitTimeout 1 -ProcessTimeout 3 }
-            elseif ($case -in @('active-timeout','ancestry-cycle','ancestry-newer')) { & $base -Release '0.164.0' -StopRunning -ProcessTimeout 2 }
-            elseif ($case -in @('daemon-running','daemon-managed-only')) { & $base -Release '0.164.0' -StopRunning -ProcessTimeout 10 }
-            elseif ($case -eq 'dry-run') { & $base -Release '0.164.0' -DryRun }
-            else { & $base -Release '0.164.0' -ProcessTimeout 3 }
+            if ($case -eq 'active-idle-timeout') { & $base -Release '0.165.0' -DeferUntilIdle -IdleWaitTimeout 1 -ProcessTimeout 3 }
+            elseif ($case -in @('active-timeout','ancestry-cycle','ancestry-newer')) { & $base -Release '0.165.0' -StopRunning -ProcessTimeout 2 }
+            elseif ($case -in @('daemon-running','daemon-managed-only')) { & $base -Release '0.165.0' -StopRunning -ProcessTimeout 10 }
+            elseif ($case -eq 'dry-run') { & $base -Release '0.165.0' -DryRun }
+            else { & $base -Release '0.165.0' -ProcessTimeout 3 }
         } catch {
             $failed = $true
             if ($case -eq 'ancestry-cycle' -and $_.Exception.Message -notmatch 'Cannot safely inspect process ancestry') { throw }
@@ -197,10 +197,10 @@ exit /b 1
         } else {
             if (Test-Path -LiteralPath $cache) { throw "Official version cache was retained for $case." }
             $output = & (Join-Path $env:CODEX_INSTALL_DIR 'codex.exe') --version
-            if ($output -ne 'codefx 0.164.0') { throw "New entrypoint failed for $case." }
+            if ($output -ne 'codefx 0.165.0') { throw "New entrypoint failed for $case." }
             if ($case -eq 'repeat') {
                 [IO.File]::WriteAllText($cache, '{"dismissed_version":"0.165.0"}')
-                & $base -Release '0.164.0' -ProcessTimeout 3
+                & $base -Release '0.165.0' -ProcessTimeout 3
                 if ([IO.File]::ReadAllText($cache) -cne '{"dismissed_version":"0.165.0"}') { throw 'Same-source update lost version dismissals.' }
             }
             if ($case -in @('committed-recovery','interrupted-recovery')) {
@@ -215,7 +215,7 @@ exit /b 1
                 Move-Item -LiteralPath $receipt.FullName -Destination (Join-Path $standalone '.transaction')
                 $downloadsBeforeRecovery = $fixture.Downloads
                 $recoveryFailed = $false
-                try { & $base -Release '0.164.0' -ProcessTimeout 3 } catch { $recoveryFailed = $true }
+                try { & $base -Release '0.165.0' -ProcessTimeout 3 } catch { $recoveryFailed = $true }
                 if ($case -eq 'committed-recovery') {
                     if ($recoveryFailed -or $fixture.Downloads -ne $downloadsBeforeRecovery) { throw 'Committed recovery repeated or rolled back a successful installation.' }
                 } else {

@@ -5019,9 +5019,7 @@ async fn user_prompt_submit_app_server_hook_notifications_render_snapshot() {
                 handler_type: AppServerHookHandlerType::Command,
                 execution_mode: AppServerHookExecutionMode::Sync,
                 scope: AppServerHookScope::Turn,
-                source_path: PathBuf::from(test_path_display("/tmp/hooks.json"))
-                    .abs()
-                    .into(),
+                source_path: PathBuf::from(test_path_display("/tmp/hooks.json")).abs(),
                 source: codex_app_server_protocol::HookSource::User,
                 display_order: 0,
                 status: AppServerHookRunStatus::Running,
@@ -5044,9 +5042,7 @@ async fn user_prompt_submit_app_server_hook_notifications_render_snapshot() {
                 handler_type: AppServerHookHandlerType::Command,
                 execution_mode: AppServerHookExecutionMode::Sync,
                 scope: AppServerHookScope::Turn,
-                source_path: PathBuf::from(test_path_display("/tmp/hooks.json"))
-                    .abs()
-                    .into(),
+                source_path: PathBuf::from(test_path_display("/tmp/hooks.json")).abs(),
                 source: codex_app_server_protocol::HookSource::User,
                 display_order: 0,
                 status: AppServerHookRunStatus::Stopped,
@@ -5695,9 +5691,7 @@ fn hook_run_summary(
         handler_type: codex_app_server_protocol::HookHandlerType::Command,
         execution_mode: codex_app_server_protocol::HookExecutionMode::Sync,
         scope: codex_app_server_protocol::HookScope::Turn,
-        source_path: PathBuf::from(test_path_display("/tmp/hooks.json"))
-            .abs()
-            .into(),
+        source_path: PathBuf::from(test_path_display("/tmp/hooks.json")).abs(),
         source: codex_app_server_protocol::HookSource::User,
         display_order: 0,
         status,

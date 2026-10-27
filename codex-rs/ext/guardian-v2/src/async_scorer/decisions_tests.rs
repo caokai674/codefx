@@ -1,6 +1,5 @@
 use super::super::startup::decisions_api_key;
 use super::*;
-use crate::async_scorer::sampler::LunaSampler;
 use codex_context_fragments::AnnotatedContent;
 use codex_context_fragments::ContextualUserFragment;
 use codex_context_fragments::RenderedFragment;
@@ -237,7 +236,7 @@ async fn http_contract_and_untrusted_response_validation() {
         .and(header("authorization", "Bearer synthetic-key"))
         .and(body_json(body.clone()))
         .respond_with(ResponseTemplate::new(/*s*/ 200).set_body_json(response.clone()))
-        .expect(/*r*/ 1)
+        .expect(/*r*/ 2)
         .mount(&server)
         .await;
     let sampler = DecisionsSampler::new(
@@ -247,7 +246,9 @@ async fn http_contract_and_untrusted_response_validation() {
     )
     .unwrap();
     let mut sampler = Arc::new(sampler);
-    // The conversation adapter omits reasoning and compaction, preserving message order.
+    // Both modes omit reasoning and compaction while preserving the messages.
+    let task = sampler.start_snapshot_comparison(&request, /*max_input_tokens*/ 128_000);
+    assert_eq!(task.finish().await.unwrap().0, Ok("low"));
     let (mut retained, _) = LunaSampler::prepare_input(
         &request,
         /*history*/ None,
@@ -302,27 +303,17 @@ async fn decisions_admits_newest_request_by_cancelling_oldest() {
         .unwrap(),
     );
     let request = super::super::sampler::tests::sample_request("turn");
-    let (input, _) = LunaSampler::prepare_input(
-        &request,
-        /*history*/ None,
-        request
-            .input
-            .iter()
-            .cloned()
-            .map(ResponseItemEnvelope::new)
-            .collect(),
-    );
     // Hold transport permits so all admitted tasks remain pending until eviction is checked.
     let permits = sampler
         .slots
         .acquire_many(MAX_CONCURRENT_REQUESTS as u32)
         .await
         .unwrap();
-    let oldest = sampler.start_conversation_comparison(&input);
+    let oldest = sampler.start_snapshot_comparison(&request, /*max_input_tokens*/ 128_000);
     let mut remaining = (1..MAX_CONCURRENT_REQUESTS)
-        .map(|_| sampler.start_conversation_comparison(&input))
+        .map(|_| sampler.start_snapshot_comparison(&request, /*max_input_tokens*/ 128_000))
         .collect::<Vec<_>>();
-    remaining.push(sampler.start_conversation_comparison(&input));
+    remaining.push(sampler.start_snapshot_comparison(&request, /*max_input_tokens*/ 128_000));
     assert!(oldest.finish().await.unwrap_err().is_cancelled());
     assert!(server.received_requests().await.unwrap().is_empty());
     drop(permits);
@@ -396,17 +387,7 @@ async fn cancelling_a_decisions_request_releases_thread_capacity() {
         .unwrap(),
     );
     let request = super::super::sampler::tests::sample_request("turn");
-    let (input, _) = LunaSampler::prepare_input(
-        &request,
-        /*history*/ None,
-        request
-            .input
-            .iter()
-            .cloned()
-            .map(ResponseItemEnvelope::new)
-            .collect(),
-    );
-    let task = sampler.start_conversation_comparison(&input);
+    let task = sampler.start_snapshot_comparison(&request, /*max_input_tokens*/ 128_000);
     tokio::time::timeout(Duration::from_secs(5), received.notified())
         .await
         .unwrap();

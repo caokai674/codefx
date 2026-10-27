@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       source_run: {type: string, required: true, default: '40152919968'}
-      tag: {type: string, required: true, default: rust-v0.164.0}
+      tag: {type: string, required: true, default: rust-v0.165.0}
       target:
         type: choice
         required: true

@@ -14,7 +14,7 @@ use std::path::Path;
 mod keybinding_tests;
 
 const ANNOUNCEMENT_TIP_URL: &str =
-    "https://raw.githubusercontent.com/caokai674/codefx/main/announcement_tip.toml";
+    "https://raw.githubusercontent.com/hitmux/codefx/main/announcement_tip.toml";
 
 const IS_MACOS: bool = cfg!(target_os = "macos");
 const IS_WINDOWS: bool = cfg!(target_os = "windows");

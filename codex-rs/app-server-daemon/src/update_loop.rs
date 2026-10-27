@@ -73,10 +73,10 @@ const INSTALLER_STDERR_TAIL_BYTES: usize = 2 * 1024;
 const INSTALLER_STDERR_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 #[cfg(unix)]
 const INSTALL_URL: &str =
-    "https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.sh";
+    "https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.sh";
 #[cfg(windows)]
 const INSTALL_URL: &str =
-    "https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.ps1";
+    "https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.ps1";
 
 pub(crate) async fn run(
     http_client_factory: HttpClientFactory,

@@ -83,7 +83,7 @@ pub(crate) enum HandlerSourcePath {
     Environment {
         environment_id: String,
         cwd: PathUri,
-        source_path: PathUri,
+        source_path: AbsolutePathBuf,
     },
     /// Executor-scoped handlers are currently excluded from user-visible hook reporting
     /// (events, summary, telemetry). Their handlers are always executed async.
@@ -129,9 +129,7 @@ impl std::fmt::Display for HandlerSourcePath {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Local(path) => write!(formatter, "{}", path.display()),
-            Self::Environment { source_path, .. } => {
-                write!(formatter, "{}", source_path.inferred_native_path_string())
-            }
+            Self::Environment { source_path, .. } => write!(formatter, "{}", source_path.display()),
             Self::ExecutorScoped {
                 environment_id,
                 manifest_path,

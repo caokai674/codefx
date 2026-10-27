@@ -3,7 +3,6 @@
 //! This module frames JSON and reasons before composition splits long text for transport.
 
 use crate::ContextSection;
-use crate::GuardianToolDescriptions;
 use crate::SectionContributor;
 use crate::SectionError;
 use crate::SectionInput;
@@ -27,8 +26,8 @@ pub struct PlannedAction {
     pub json: String,
     pub kind: PlannedActionKind,
     pub reason: Option<String>,
-    /// Untrusted metadata capped during sync preparation; action JSON stays complete.
-    pub tool_descriptions: Option<GuardianToolDescriptions>,
+    /// Host-rendered, bounded untrusted metadata; the action JSON remains required.
+    pub tool_descriptions: Option<String>,
 }
 
 // Action JSON and reasons can contain credentials; diagnostics expose only the kind.

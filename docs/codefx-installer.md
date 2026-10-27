@@ -10,7 +10,7 @@
 - Windows：[`scripts/install/install-codefx.ps1`](../scripts/install/install-codefx.ps1)
 - 基础安装器：[`install.sh`](../scripts/install/install.sh)、[`install.ps1`](../scripts/install/install.ps1)
 
-安装器独立于二进制构建标签维护。`rust-v0.164.0` 原始源码归档中的旧入口仍会提前卸载旧包，存在安装中断后失去原版本的风险；安装请使用本节的修正版入口或完成原生验收后发布的修正版安装器包。二进制的原始构建标签保留用于复现构建。
+安装器独立于二进制构建标签维护。`rust-v0.165.0` 原始源码归档中的旧入口仍会提前卸载旧包，存在安装中断后失去原版本的风险；安装请使用本节的修正版入口或完成原生验收后发布的修正版安装器包。二进制的原始构建标签保留用于复现构建。
 
 入口脚本会把安装器源码引用解析为固定的 Git 提交，再下载和运行该提交的基础安装器。下载要求 HTTPS，有重试和超时。可以使用 `CODEFX_INSTALL_REF` 固定审核过的提交。遇到 GitHub API 限流时，可通过环境变量 `CODEFX_GITHUB_TOKEN` 提供只读令牌；安装器只对本仓库的 API 元数据请求附加认证，不把令牌写入安装配置，也不传给启动的 Codefx 或 daemon。
 
@@ -19,7 +19,7 @@
 | 目的 | Linux / macOS | Windows |
 | --- | --- | --- |
 | 查看计划，保持安装不变 | `--dry-run` | `-DryRun` |
-| 指定版本 | `--release 0.164.0` | `-Release 0.164.0` |
+| 指定版本 | `--release 0.165.0` | `-Release 0.165.0` |
 | 请求运行中的会话正常退出 | `--stop-running` | `-StopRunning` |
 | 等待当前会话自行退出 | `--defer-until-idle` | `-DeferUntilIdle` |
 | 空闲等待上限（秒） | `CODEFX_IDLE_WAIT_TIMEOUT=900` | `-IdleWaitTimeout 900` |
@@ -72,7 +72,7 @@ Windows 默认入口是 `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`，使用 junc
 codex --version
 ```
 
-预期输出 `codefx 0.164.0`。Unix 可用 `command -v codex` 查看入口；Windows 使用 `Get-Command codex -All`。
+预期输出 `codefx 0.165.0`。Unix 可用 `command -v codex` 查看入口；Windows 使用 `Get-Command codex -All`。
 
 ## 独立 app-server daemon
 

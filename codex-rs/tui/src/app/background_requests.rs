@@ -27,7 +27,6 @@ use codex_app_server_protocol::MarketplaceUpgradeResponse;
 use codex_app_server_protocol::McpServerOauthLoginParams;
 use codex_app_server_protocol::RequestId;
 
-use crate::hooks_rpc::HooksListTarget;
 use crate::hooks_rpc::fetch_hooks_list;
 use crate::hooks_rpc::write_hook_trust;
 use crate::hooks_rpc::write_hook_trusts;
@@ -325,18 +324,14 @@ impl App {
         });
     }
 
-    pub(super) fn fetch_hooks_list(
-        &mut self,
-        app_server: &AppServerSession,
-        target: HooksListTarget,
-    ) {
+    pub(super) fn fetch_hooks_list(&mut self, app_server: &AppServerSession, cwd: PathBuf) {
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
-            let result = fetch_hooks_list(request_handle, &target)
+            let result = fetch_hooks_list(request_handle, cwd.clone())
                 .await
                 .map_err(|err| err.to_string());
-            app_event_tx.send(AppEvent::HooksLoaded { target, result });
+            app_event_tx.send(AppEvent::HooksLoaded { cwd, result });
         });
     }
 
