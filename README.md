@@ -1,6 +1,6 @@
 <p align="center"><strong>Codefx CLI</strong> is a fork of OpenAI Codex CLI with resilient retries and Codefx release updates.
 <p align="center">
-  <img src="https://github.com/caokai674/codefx/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
+  <img src="https://github.com/hitmux/codefx/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
 </p>
 </br>
 If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
@@ -13,7 +13,7 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ### Installing Codefx
 
-[Codefx CLI 0.164.0](https://github.com/hitmux/codefx/releases/tag/rust-v0.164.0) is a stable release. Native packages and installer checks cover:
+[Codefx CLI 0.165.0](https://github.com/hitmux/codefx/releases/tag/rust-v0.165.0) is a stable release. Native packages and installer checks cover:
 
 | Platform | Architectures |
 | --- | --- |
@@ -21,7 +21,7 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 | macOS | Intel, Apple Silicon |
 | Windows | x64, ARM64 |
 
-Use the reviewed installers below or the [verified installer bundle](https://github.com/hitmux/codefx/releases/download/rust-v0.164.0/codefx-installers-38f48572fe9f.zip). The original `rust-v0.164.0` source archive contains historical wrappers that uninstall existing packages before downloading; the revised installers are maintained independently of that binary build tag.
+Use the reviewed installers below or the [verified installer bundle](https://github.com/hitmux/codefx/releases/download/rust-v0.165.0/codefx-installers-38f48572fe9f.zip). The original `rust-v0.165.0` source archive contains historical wrappers that uninstall existing packages before downloading; the revised installers are maintained independently of that binary build tag.
 
 Linux / macOS — download the complete bootstrap before executing it:
 
@@ -42,7 +42,7 @@ Windows — run in a non-elevated PowerShell:
 & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop -Uri 'https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.ps1').Content))
 ```
 
-Verify the selected command with `codex --version`; the executable remains named `codex` and reports `codefx 0.164.0`.
+Verify the selected command with `codex --version`; the executable remains named `codex` and reports `codefx 0.165.0`.
 
 The installer verifies release checksums, archive paths, package metadata and the staged executable before switching commands. It records the previous installation and restores it if cutover fails. Existing npm, pnpm, Bun, Vite+ and Homebrew registrations remain available; the new native command uses a dedicated installation directory.
 
