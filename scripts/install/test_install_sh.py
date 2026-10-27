@@ -21,27 +21,39 @@ MISMATCH_VERSION = "0.145.0"
 
 
 class InstallShTest(unittest.TestCase):
-    def test_active_codex_defaults_to_preserve_and_aborts_before_archive_download(self) -> None:
+    def test_active_codex_defaults_to_preserve_and_aborts_before_archive_download(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             old, _ = create_official_install(root)
             process = subprocess.Popen(["sleep", "60"])
             try:
                 result, requests = run_installer_in(
-                    root, VERSION, replacement_wrapper=True,
+                    root,
+                    VERSION,
+                    replacement_wrapper=True,
                     extra_env={"CODEFX_TEST_ACTIVE_PID": str(process.pid)},
                 )
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertIn("Codex was left running", result.stderr)
-                self.assertTrue(all(not url.endswith((".tar.gz", ".tgz")) for url in requests), requests)
-                self.assertIsNone(process.poll(), "Declining termination must preserve running sessions")
+                self.assertTrue(
+                    all(not url.endswith((".tar.gz", ".tgz")) for url in requests),
+                    requests,
+                )
+                self.assertIsNone(
+                    process.poll(),
+                    "Declining termination must preserve running sessions",
+                )
                 self.assertTrue(old.is_file(), "Original codex must be retained")
             finally:
                 if process.poll() is None:
                     process.terminate()
                 process.wait(timeout=5)
 
-    def test_interactive_confirmation_terminates_existing_codex_and_installs(self) -> None:
+    def test_interactive_confirmation_terminates_existing_codex_and_installs(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             archive, checksum, metadata = create_package_release(
@@ -50,8 +62,11 @@ class InstallShTest(unittest.TestCase):
             process = subprocess.Popen(["sleep", "60"])
             try:
                 result, _ = run_installer_in(
-                    root, VERSION, metadata_json=metadata,
-                    archive_path=archive, checksum_path=checksum,
+                    root,
+                    VERSION,
+                    metadata_json=metadata,
+                    archive_path=archive,
+                    checksum_path=checksum,
                     tty_response="y\nn\n",
                     extra_env={
                         "CODEFX_TEST_ACTIVE_PID": str(process.pid),
@@ -60,11 +75,14 @@ class InstallShTest(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("installed successfully", result.stdout)
-                self.assertIsNotNone(process.poll(), "Approved process was not terminated")
+                self.assertIsNotNone(
+                    process.poll(), "Approved process was not terminated"
+                )
                 self.assertEqual(
                     subprocess.check_output(
                         [str(root / "install-bin/codex"), "--version"], text=True
-                    ).strip(), f"codefx {VERSION}"
+                    ).strip(),
+                    f"codefx {VERSION}",
                 )
             finally:
                 if process.poll() is None:
@@ -77,7 +95,9 @@ class InstallShTest(unittest.TestCase):
             process = subprocess.Popen(["sleep", "60"])
             try:
                 result, requests = run_installer_in(
-                    root, VERSION, arguments=("--defer-until-idle",),
+                    root,
+                    VERSION,
+                    arguments=("--defer-until-idle",),
                     extra_env={
                         "CODEFX_TEST_ACTIVE_PID": str(process.pid),
                         "CODEFX_IDLE_WAIT_TIMEOUT": "1",
@@ -85,7 +105,9 @@ class InstallShTest(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("still running", result.stderr)
-                self.assertTrue(all(not url.endswith((".tar.gz", ".tgz")) for url in requests))
+                self.assertTrue(
+                    all(not url.endswith((".tar.gz", ".tgz")) for url in requests)
+                )
                 self.assertIsNone(process.poll())
             finally:
                 if process.poll() is None:
@@ -99,7 +121,9 @@ class InstallShTest(unittest.TestCase):
             alias = root / "bin-alias"
             alias.symlink_to(old.parent, target_is_directory=True)
             result, _ = run_installer_in(
-                root, VERSION, arguments=("--dry-run",),
+                root,
+                VERSION,
+                arguments=("--dry-run",),
                 extra_env={
                     "PATH": f"{old.parent}:{alias}:{old.parent}:/usr/bin:/bin",
                 },
@@ -109,62 +133,106 @@ class InstallShTest(unittest.TestCase):
             self.assertNotIn(f"{alias}/codex [native]", result.stdout)
 
     def test_replacement_failure_preserves_existing_command(self) -> None:
-        for failure in ("metadata", "missing_assets", "missing_download", "checksum", "archive", "version", "identity"):
+        for failure in (
+            "metadata",
+            "missing_assets",
+            "missing_download",
+            "checksum",
+            "archive",
+            "version",
+            "identity",
+        ):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 old, log = create_official_install(root)
                 archive, checksum, metadata = create_package_release(
-                    root, binary_version=MISMATCH_VERSION if failure == "version" else VERSION,
+                    root,
+                    binary_version=MISMATCH_VERSION
+                    if failure == "version"
+                    else VERSION,
                     target="x86_64-unknown-linux-musl",
                 )
-                options = dict(metadata_json=metadata, archive_path=archive, checksum_path=checksum)
+                options = dict(
+                    metadata_json=metadata, archive_path=archive, checksum_path=checksum
+                )
                 if failure == "metadata":
                     options["metadata_failure"] = True
                 elif failure == "missing_assets":
-                    options["metadata_json"] = json.dumps({"tag_name": f"rust-v{VERSION}", "assets": []})
+                    options["metadata_json"] = json.dumps(
+                        {"tag_name": f"rust-v{VERSION}", "assets": []}
+                    )
                 elif failure == "missing_download":
                     options["archive_path"] = None
                 elif failure == "checksum":
                     archive.write_bytes(b"corrupt download")
                 elif failure == "archive":
                     archive.write_bytes(b"correctly hashed but invalid tar")
-                    options["metadata_json"] = refresh_release_digests(archive, checksum, metadata)
+                    options["metadata_json"] = refresh_release_digests(
+                        archive, checksum, metadata
+                    )
                 elif failure == "identity":
                     # A correctly hashed official binary with the same version must fail.
                     binary = root / "package/bin/codex"
                     binary.write_text(f"#!/bin/sh\nprintf 'codex-cli {VERSION}\\n'\n")
                     repack_release(root, archive)
-                    options["metadata_json"] = refresh_release_digests(archive, checksum, metadata)
+                    options["metadata_json"] = refresh_release_digests(
+                        archive, checksum, metadata
+                    )
                 before = old.read_bytes()
-                result, _ = run_installer_in(root, VERSION, replacement_wrapper=True, **options)
+                result, _ = run_installer_in(
+                    root, VERSION, replacement_wrapper=True, **options
+                )
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertEqual(old.read_bytes(), before)
-                self.assertFalse(log.exists(), "Package managers ran before a verified replacement")
-                self.assertIn("codex-cli", subprocess.check_output([str(old), "--version"], text=True))
+                self.assertFalse(
+                    log.exists(), "Package managers ran before a verified replacement"
+                )
+                self.assertIn(
+                    "codex-cli",
+                    subprocess.check_output([str(old), "--version"], text=True),
+                )
 
-    def test_replacement_retains_package_manager_install_after_new_command_runs(self) -> None:
+    def test_replacement_retains_package_manager_install_after_new_command_runs(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             old, log = create_official_install(root)
-            archive, checksum, metadata = create_package_release(root, target="x86_64-unknown-linux-musl")
+            archive, checksum, metadata = create_package_release(
+                root, target="x86_64-unknown-linux-musl"
+            )
             result, requests = run_installer_in(
-                root, VERSION, replacement_wrapper=True, metadata_json=metadata,
-                archive_path=archive, checksum_path=checksum,
+                root,
+                VERSION,
+                replacement_wrapper=True,
+                metadata_json=metadata,
+                archive_path=archive,
+                checksum_path=checksum,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(old.exists())
-            self.assertFalse(log.exists(), "Retained package managers must not be modified")
+            self.assertFalse(
+                log.exists(), "Retained package managers must not be modified"
+            )
             visible = root / "install-bin/codex"
-            self.assertEqual(subprocess.check_output([str(visible), "--version"], text=True).strip(), f"codefx {VERSION}")
+            self.assertEqual(
+                subprocess.check_output([str(visible), "--version"], text=True).strip(),
+                f"codefx {VERSION}",
+            )
             self.assertFalse(list(root.glob("codefx-install.*")))
             self.assertEqual(len(requests), 5)
-            self.assertIn("/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/scripts/install/install.sh", requests[1])
+            self.assertIn(
+                "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/scripts/install/install.sh",
+                requests[1],
+            )
 
     def test_same_version_standalone_survives_invalid_staged_binary(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             target = "x86_64-unknown-linux-musl"
-            release = root / f"codex-home/packages/standalone/releases/{VERSION}-{target}"
+            release = (
+                root / f"codex-home/packages/standalone/releases/{VERSION}-{target}"
+            )
             (release / "bin").mkdir(parents=True)
             old = release / "bin/codex"
             write_executable(old, f"#!/bin/sh\nprintf 'codex-cli {VERSION}\\n'\n")
@@ -173,13 +241,25 @@ class InstallShTest(unittest.TestCase):
             visible = root / "install-bin/codex"
             visible.parent.mkdir()
             visible.symlink_to(current / "bin/codex")
-            archive, checksum, metadata = create_package_release(root, binary_version=MISMATCH_VERSION, target=target)
+            archive, checksum, metadata = create_package_release(
+                root, binary_version=MISMATCH_VERSION, target=target
+            )
             before = old.read_bytes()
-            result, _ = run_installer_in(root, VERSION, replacement_wrapper=True, metadata_json=metadata, archive_path=archive, checksum_path=checksum)
+            result, _ = run_installer_in(
+                root,
+                VERSION,
+                replacement_wrapper=True,
+                metadata_json=metadata,
+                archive_path=archive,
+                checksum_path=checksum,
+            )
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(old.read_bytes(), before)
             self.assertEqual(current.resolve(), release)
-            self.assertIn("codex-cli", subprocess.check_output([str(visible), "--version"], text=True))
+            self.assertIn(
+                "codex-cli",
+                subprocess.check_output([str(visible), "--version"], text=True),
+            )
 
     def test_metadata_fetch_failure_is_not_reported_as_missing_assets(self) -> None:
         result, requests = run_installer(VERSION, metadata_failure=True)
@@ -382,8 +462,7 @@ class InstallShTest(unittest.TestCase):
             binary = daemon / "releases" / release_name / "bin/codex"
             contents = binary.read_text()
             binary.write_text(
-                '#!/bin/sh\n[ "$1" = "--version" ] || exit 2\n'
-                f"echo codefx {VERSION}\n"
+                f'#!/bin/sh\n[ "$1" = "--version" ] || exit 2\necho codefx {VERSION}\n'
             )
             incompatible, _ = run_installer_in(
                 root,
@@ -1259,8 +1338,18 @@ def run_installer_in(
     home = root / "home"
     home.mkdir(exist_ok=True)
     fixture_ps = bin_dir / "ps"
-    prior_ps = fixture_ps.read_text() if fixture_ps.exists() else "#!/bin/sh\nexec /bin/ps \"$@\"\n"
-    fixture_ps.write_text(prior_ps.replace("#!/bin/sh\n", "#!/bin/sh\nif [ \"${1:-}\" = -u ]; then\n  if [ -n \"${CODEFX_TEST_ACTIVE_PID:-}\" ]; then\n    cf_state=$(/bin/ps -p \"$CODEFX_TEST_ACTIVE_PID\" -o stat= 2>/dev/null || true)\n    case \"$cf_state\" in\n      \"\"|*Z*) ;;\n      *) printf '%s %s S codex\\n' \"$CODEFX_TEST_ACTIVE_PID\" \"${CODEFX_TEST_ACTIVE_PARENT:-1}\" ;;\n    esac\n  fi\n  exit 0\nfi\n", 1))
+    prior_ps = (
+        fixture_ps.read_text()
+        if fixture_ps.exists()
+        else '#!/bin/sh\nexec /bin/ps "$@"\n'
+    )
+    fixture_ps.write_text(
+        prior_ps.replace(
+            "#!/bin/sh\n",
+            '#!/bin/sh\nif [ "${1:-}" = -u ]; then\n  if [ -n "${CODEFX_TEST_ACTIVE_PID:-}" ]; then\n    cf_state=$(/bin/ps -p "$CODEFX_TEST_ACTIVE_PID" -o stat= 2>/dev/null || true)\n    case "$cf_state" in\n      ""|*Z*) ;;\n      *) printf \'%s %s S codex\\n\' "$CODEFX_TEST_ACTIVE_PID" "${CODEFX_TEST_ACTIVE_PARENT:-1}" ;;\n    esac\n  fi\n  exit 0\nfi\n',
+            1,
+        )
+    )
     fixture_ps.chmod(0o755)
     env = os.environ.copy()
     env.update(
@@ -1320,7 +1409,15 @@ def run_installer_in(
             master_fd, slave_fd = os.openpty()
             os.write(master_fd, tty_response.encode("utf-8"))
         result = subprocess.run(
-            ["/bin/sh", str(INSTALL_SCRIPT.with_name("install-codefx.sh") if replacement_wrapper else INSTALL_SCRIPT), *arguments],
+            [
+                "/bin/sh",
+                str(
+                    INSTALL_SCRIPT.with_name("install-codefx.sh")
+                    if replacement_wrapper
+                    else INSTALL_SCRIPT
+                ),
+                *arguments,
+            ],
             capture_output=True,
             check=False,
             env=env,
@@ -1345,18 +1442,26 @@ def create_official_install(root: Path) -> tuple[Path, Path]:
     bin_dir = root / "bin"
     bin_dir.mkdir()
     old = bin_dir / "codex"
-    write_executable(old, f"#!/bin/sh\n# #!/usr/bin/env node\nprintf 'codex-cli {VERSION}\\n'\n")
+    write_executable(
+        old, f"#!/bin/sh\n# #!/usr/bin/env node\nprintf 'codex-cli {VERSION}\\n'\n"
+    )
     log = root / "uninstall.log"
-    write_executable(bin_dir / "npm", f"""#!/bin/sh
+    write_executable(
+        bin_dir / "npm",
+        f"""#!/bin/sh
 set -eu
 printf 'npm attempted\\n' >>'{log}'
 actual="$("$CODEX_INSTALL_DIR/codex" --version)"
 [ "$actual" = 'codefx {VERSION}' ]
 printf 'npm verified %s\\n' "$actual" >>'{log}'
 rm -f '{old}'
-""")
+""",
+    )
     for manager in ("bun", "pnpm", "vp"):
-        write_executable(bin_dir / manager, f"#!/bin/sh\necho unexpected-{manager} >>'{log}'\nexit 1\n")
+        write_executable(
+            bin_dir / manager,
+            f"#!/bin/sh\necho unexpected-{manager} >>'{log}'\nexit 1\n",
+        )
     return old, log
 
 
@@ -1380,10 +1485,13 @@ def process_start_time() -> str:
     try:
         details = subprocess.check_output(
             ["ps", "-p", str(os.getpid()), "-o", "stat=", "-o", "lstart="],
-            text=True, stderr=subprocess.DEVNULL,
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
     except subprocess.CalledProcessError as exc:
-        raise unittest.SkipTest("ps cannot inspect this runtime's process namespace") from exc
+        raise unittest.SkipTest(
+            "ps cannot inspect this runtime's process namespace"
+        ) from exc
     return details.split(maxsplit=1)[1]
 
 
