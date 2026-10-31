@@ -53,6 +53,8 @@ CF_TIMEOUT="${CODEFX_PROCESS_TIMEOUT:-30}"
 cf_prepared=0
 cf_tx=""
 cf_committed=0
+update_parent_pid="${CODEX_UPDATE_PARENT_PID:-}"
+update_context_valid=0
 
 step() {
   printf '==> %s\n' "$1"
@@ -1297,6 +1299,31 @@ cf_guarded() {
     [ "$DAEMON_ONLY" = 1 ] || [ "${old_updater_parent:-false}" = true ]
 }
 
+# A release Codex process may launch this installer while it is still alive.
+# Accept that one ancestor only when the caller supplied a one-shot token that
+# was created by the Rust updater. Any malformed, missing, or replayed token
+# leaves the normal ancestor protection in place (and fails closed).
+cf_validate_update_context() {
+  [ "${CODEX_UPDATE_PROTOCOL:-}" = 1 ] || return 0
+  token="${CODEX_UPDATE_TOKEN:-}"
+  token_file="${CODEX_UPDATE_TOKEN_FILE:-}"
+  case "$update_parent_pid" in ''|*[!0-9]*|0) return 1 ;; esac
+  [ "$(printf '%s' "$token" | awk 'length == 64 { print "ok" }')" = ok ] || return 1
+  case "$token" in *[!0-9a-fA-F]*) return 1 ;; esac
+  case "$token_file" in /*) ;; *) return 1 ;; esac
+  [ -n "$token_file" ] && [ -f "$token_file" ] || return 1
+  if [ "$os" = linux ] || [ "$os" = darwin ]; then
+    token_owner="$(stat -c '%u' "$token_file" 2>/dev/null || stat -f '%u' "$token_file" 2>/dev/null || true)"
+    token_mode="$(stat -c '%a' "$token_file" 2>/dev/null || stat -f '%Lp' "$token_file" 2>/dev/null || true)"
+    [ "$token_owner" = "$(id -u)" ] || return 1
+    [ "$token_mode" = 600 ] || return 1
+  fi
+  file_binding="$(tr -d '\r\n' < "$token_file" 2>/dev/null || true)"
+  rm -f "$token_file" 2>/dev/null || true
+  [ "$file_binding" = "$update_parent_pid:$token" ] || return 1
+  update_context_valid=1
+}
+
 cf_run() (
   # Portable bounded execution; no dependency on GNU timeout on macOS.
   ( unset CODEFX_GITHUB_TOKEN; exec "$@" ) 9>&- & cf_child=$!
@@ -1399,11 +1426,12 @@ cf_processes() (
       echo 'Cannot inspect running processes; installation was stopped safely.' >&2; return 1
     fi
   fi
-  awk '{
+  awk -v skip="$update_parent_pid" -v allow="$update_context_valid" '{
     pid=$1; parent=$2; state=$3
     $1=$2=$3=""; sub(/^[[:space:]]+/, "")
     name=$0; sub(/^.*\//, "", name)
-    if (state !~ /^Z/ && name ~ /^(codex|codefx)([-_.][A-Za-z0-9_.-]+)?$/) print pid, parent, $0
+    if (state !~ /^Z/ && name ~ /^(codex|codefx)([-_.][A-Za-z0-9_.-]+)?$/ &&
+        !(allow == "1" && pid == skip)) print pid, parent, $0
   }' "$tmp_dir/processes"
 )
 
@@ -1418,7 +1446,10 @@ cf_check_ancestor() {
       echo 'Cannot safely inspect process ancestry; use an external terminal.' >&2
       return 1
     fi
-    if awk -v p="$cf_ancestor" '$1 == p { found=1 } END { exit !found }' "$tmp_dir/active-codex"; then
+    if awk -v p="$cf_ancestor" -v skip="$update_parent_pid" -v allow="$update_context_valid" '
+      $1 == p { found=1; if (!(allow == "1" && p == skip)) blocked=1 }
+      END { exit blocked ? 0 : 1 }
+    ' "$tmp_dir/active-codex"; then
       echo 'Codex is running in the installer ancestor chain. Run this installer from an external terminal.' >&2
       return 1
     fi
@@ -1907,6 +1938,12 @@ if [ "${CODEX_INSTALL_IF_LATEST:-}" = "1" ] || [ "${CODEX_INSTALL_IF_CURRENT:-}"
   if [ "${CODEX_INSTALL_IF_CURRENT:-}" != "1" ] &&
     [ "$(cat "$AUTO_UPDATE_VERSION" 2>/dev/null || true)" != "$guarded_release" ]; then
     exit 0
+  fi
+fi
+if [ "${CODEX_UPDATE_PROTOCOL:-}" = 1 ]; then
+  if ! cf_validate_update_context; then
+    echo 'Invalid or expired Codex self-update context; refusing to bypass active-session checks.' >&2
+    exit 1
   fi
 fi
 cf_preflight_sessions

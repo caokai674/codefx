@@ -56,7 +56,7 @@ impl UpdateAction {
                 "sh",
                 &[
                     "-c",
-                    "curl -fsSL https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.sh | CODEFX_REPLACE_OFFICIAL=1 CODEX_NON_INTERACTIVE=1 sh",
+                    "curl -fsSL https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.sh | CODEFX_REPLACE_OFFICIAL=1 CODEX_NON_INTERACTIVE=1 sh",
                 ],
             ),
             UpdateAction::StandaloneWindows => (
@@ -65,7 +65,7 @@ impl UpdateAction {
                     "-ExecutionPolicy",
                     "Bypass",
                     "-c",
-                    "$env:CODEFX_REPLACE_OFFICIAL='1'; $env:CODEX_NON_INTERACTIVE='1'; irm https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.ps1 | iex",
+                    "$env:CODEFX_REPLACE_OFFICIAL='1'; $env:CODEX_NON_INTERACTIVE='1'; irm https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.ps1 | iex",
                 ],
             ),
         }
@@ -163,7 +163,7 @@ mod tests {
                 "sh",
                 &[
                     "-c",
-                    "curl -fsSL https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.sh | CODEFX_REPLACE_OFFICIAL=1 CODEX_NON_INTERACTIVE=1 sh"
+                    "curl -fsSL https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.sh | CODEFX_REPLACE_OFFICIAL=1 CODEX_NON_INTERACTIVE=1 sh"
                 ][..],
             )
         );
@@ -175,7 +175,7 @@ mod tests {
                     "-ExecutionPolicy",
                     "Bypass",
                     "-c",
-                    "$env:CODEFX_REPLACE_OFFICIAL='1'; $env:CODEX_NON_INTERACTIVE='1'; irm https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.ps1 | iex"
+                    "$env:CODEFX_REPLACE_OFFICIAL='1'; $env:CODEX_NON_INTERACTIVE='1'; irm https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.ps1 | iex"
                 ][..],
             )
         );

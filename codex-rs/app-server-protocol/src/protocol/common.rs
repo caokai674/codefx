@@ -2447,7 +2447,7 @@ mod tests {
 
         let hooks_list = ClientRequest::HooksList {
             request_id: request_id(),
-            params: v2::HooksListParams::default(),
+            params: v2::HooksListParams { cwds: Vec::new() },
         };
         assert_eq!(
             hooks_list.serialization_scope(),

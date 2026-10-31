@@ -26,9 +26,9 @@ New-Item -ItemType Directory -Path $testRoot | Out-Null
 try {
     $fakeBinary = Join-Path $testRoot 'codex.ps1'
     foreach ($case in @(
-        @{ Output = 'codefx 0.164.0'; ExitCode = 0; Expected = '0.164.0' },
-        @{ Output = 'codex-cli 0.164.0'; ExitCode = 0; Expected = $null },
-        @{ Output = 'codefx 0.164.0'; ExitCode = 1; Expected = $null }
+        @{ Output = 'codefx 0.165.0'; ExitCode = 0; Expected = '0.165.0' },
+        @{ Output = 'codex-cli 0.165.0'; ExitCode = 0; Expected = $null },
+        @{ Output = 'codefx 0.165.0'; ExitCode = 1; Expected = $null }
     )) {
         Set-Content -LiteralPath $fakeBinary -Value (
             '$global:LASTEXITCODE = ' + $case.ExitCode + "`n'" + $case.Output + "'"

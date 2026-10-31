@@ -156,7 +156,6 @@ where
             input.thread_store.insert(SkillsThreadState::new(
                 (self.config_from_host)(input.config),
                 cloud_skills_available,
-                input.extension_metrics,
             ));
         })
     }
@@ -168,7 +167,7 @@ where
 {
     fn on_config_changed(
         &self,
-        session_store: &ExtensionData,
+        _session_store: &ExtensionData,
         thread_store: &ExtensionData,
         _previous_config: &C,
         new_config: &C,
@@ -178,13 +177,7 @@ where
             state.set_config(next_config);
         } else {
             let cloud_skills_available = self.providers.has_cloud_provider();
-            thread_store.insert(SkillsThreadState::new(
-                next_config,
-                cloud_skills_available,
-                session_store
-                    .get::<SkillsSessionState>()
-                    .and_then(|state| state.extension_metrics.clone()),
-            ));
+            thread_store.insert(SkillsThreadState::new(next_config, cloud_skills_available));
         }
     }
 }

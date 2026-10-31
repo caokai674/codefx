@@ -2480,7 +2480,7 @@
           "default": "unknown"
         },
         "sourcePath": {
-          "$ref": "#/definitions/LegacyAppPathString"
+          "$ref": "#/definitions/AbsolutePathBuf"
         },
         "startedAt": {
           "format": "int64",

@@ -53,7 +53,6 @@ fn spawn_startup_thread_start(
 pub(super) struct FreshStartupDefaults {
     pub(super) server_defaults_read: bool,
     pub(super) prompt_windows_sandbox: bool,
-    pub(super) approval_policy: Option<codex_protocol::protocol::AskForApproval>,
 }
 
 pub(super) async fn prepare_fresh_startup_config(
@@ -75,7 +74,7 @@ pub(super) async fn prepare_fresh_startup_config(
         defaults_cwd,
     )
     .await?;
-    let mut projectless = crate::projectless::AppliedDefaults::default();
+    let mut prompt_windows_sandbox = false;
     if let Some(defaults) = defaults.as_ref() {
         super::new_session::overlay_new_session_defaults(
             config,
@@ -83,7 +82,7 @@ pub(super) async fn prepare_fresh_startup_config(
             cli_kv_overrides,
             harness_overrides,
         );
-        projectless = crate::projectless::apply_defaults(
+        prompt_windows_sandbox = crate::projectless::apply_defaults(
             config,
             harness_overrides,
             app_server,
@@ -99,8 +98,7 @@ pub(super) async fn prepare_fresh_startup_config(
     );
     Ok(FreshStartupDefaults {
         server_defaults_read: defaults.is_some(),
-        prompt_windows_sandbox: projectless.prompt_windows_sandbox,
-        approval_policy: projectless.approval_policy,
+        prompt_windows_sandbox,
     })
 }
 
@@ -420,10 +418,6 @@ impl App {
                 }
             },
         };
-        launch_choices.apply_projectless_approval_policy(
-            startup_defaults.approval_policy,
-            bootstrap.allowed_approval_policies.as_deref(),
-        );
         tracing::debug!(
             has_platform_family = app_server.app_server_platform_family().is_some(),
             has_platform_os = app_server.app_server_platform_os().is_some(),

@@ -34,7 +34,7 @@ const MAX_VERSION_RESPONSE_BYTES: usize = 1024 * 1024;
 
 const VERSION_FILE_NAME: &str = "version.json";
 const GITHUB_LATEST_RELEASE_URL: &str =
-    "https://api.github.com/repos/caokai674/codefx/releases/latest";
+    "https://api.github.com/repos/hitmux/codefx/releases/latest";
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const DESKTOP_UPDATE_URL: &str = "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml";
 #[cfg(all(target_os = "macos", not(target_arch = "x86_64")))]
@@ -395,7 +395,7 @@ fn update_action_label(context: &InstallContext) -> &'static str {
         | InstallMethod::Pnpm
         | InstallMethod::Brew
         | InstallMethod::Standalone { .. } => {
-            "sh -c 'curl -fsSL https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.sh | CODEFX_REPLACE_OFFICIAL=1 CODEX_NON_INTERACTIVE=1 sh'"
+            "sh -c 'curl -fsSL https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.sh | CODEFX_REPLACE_OFFICIAL=1 CODEX_NON_INTERACTIVE=1 sh'"
         }
         InstallMethod::Other => "manual or unknown",
     }
@@ -682,14 +682,14 @@ mod tests {
                 method: InstallMethod::Npm,
                 package_layout: None,
             }),
-            "sh -c 'curl -fsSL https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.sh | CODEFX_REPLACE_OFFICIAL=1 CODEX_NON_INTERACTIVE=1 sh'"
+            "sh -c 'curl -fsSL https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.sh | CODEFX_REPLACE_OFFICIAL=1 CODEX_NON_INTERACTIVE=1 sh'"
         );
         assert_eq!(
             update_action_label(&InstallContext {
                 method: InstallMethod::Pnpm,
                 package_layout: None,
             }),
-            "sh -c 'curl -fsSL https://raw.githubusercontent.com/caokai674/codefx/main/scripts/install/install-codefx.sh | CODEFX_REPLACE_OFFICIAL=1 CODEX_NON_INTERACTIVE=1 sh'"
+            "sh -c 'curl -fsSL https://raw.githubusercontent.com/hitmux/codefx/main/scripts/install/install-codefx.sh | CODEFX_REPLACE_OFFICIAL=1 CODEX_NON_INTERACTIVE=1 sh'"
         );
         assert_eq!(
             update_action_label(&InstallContext {

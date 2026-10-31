@@ -1,6 +1,5 @@
 mod aliases;
 pub mod catalog;
-mod catalog_observability;
 mod catalog_prompt;
 mod catalog_state;
 mod config;

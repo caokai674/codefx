@@ -1,4 +1,5 @@
 """Offline transaction regressions, executed on native Linux and macOS runners."""
+
 import io
 import json
 import os
@@ -12,12 +13,17 @@ import tempfile
 import unittest
 
 from test_install_sh import (
-    VERSION, create_package_release, refresh_release_digests, repack_release,
-    run_installer_in, write_executable, INSTALL_SCRIPT,
+    VERSION,
+    create_package_release,
+    refresh_release_digests,
+    repack_release,
+    run_installer_in,
+    write_executable,
+    INSTALL_SCRIPT,
 )
 
-MAC = platform.system() == 'Darwin'
-TARGET = 'aarch64-apple-darwin' if MAC else 'x86_64-unknown-linux-musl'
+MAC = platform.system() == "Darwin"
+TARGET = "aarch64-apple-darwin" if MAC else "x86_64-unknown-linux-musl"
 
 
 class Transactions(unittest.TestCase):
@@ -26,118 +32,168 @@ class Transactions(unittest.TestCase):
 
     def run_install(self, root, package, **kwargs):
         archive, checksum, metadata = package
-        return run_installer_in(root, VERSION, archive_path=archive, checksum_path=checksum,
-                                metadata_json=metadata, force_macos=MAC, **kwargs)[0]
+        return run_installer_in(
+            root,
+            VERSION,
+            archive_path=archive,
+            checksum_path=checksum,
+            metadata_json=metadata,
+            force_macos=MAC,
+            **kwargs,
+        )[0]
 
     def old_install(self, root):
-        release = root / f'codex-home/packages/standalone/releases/{VERSION}-{TARGET}'
-        (release / 'bin').mkdir(parents=True)
-        old = release / 'bin/codex'
+        release = root / f"codex-home/packages/standalone/releases/{VERSION}-{TARGET}"
+        (release / "bin").mkdir(parents=True)
+        old = release / "bin/codex"
         write_executable(old, "#!/bin/sh\nprintf 'codex-cli old-preserved\\n'\n")
-        current = release.parent.parent / 'current'
+        current = release.parent.parent / "current"
         current.symlink_to(release)
-        visible = root / 'install-bin/codex'
+        visible = root / "install-bin/codex"
         visible.parent.mkdir()
-        visible.symlink_to(current / 'bin/codex')
+        visible.symlink_to(current / "bin/codex")
         return old, visible, current
 
     def test_dry_run_has_no_installation_or_profile_side_effects(self):
-        with tempfile.TemporaryDirectory(prefix='codefx space ') as tmp:
+        with tempfile.TemporaryDirectory(prefix="codefx space ") as tmp:
             root = Path(tmp).resolve()
-            result = self.run_install(root, self.package(root), arguments=('--dry-run',))
+            result = self.run_install(
+                root, self.package(root), arguments=("--dry-run",)
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse((root / 'codex-home').exists())
-            self.assertFalse((root / 'home/.profile').exists())
-            self.assertFalse((root / 'install-bin').exists())
+            self.assertFalse((root / "codex-home").exists())
+            self.assertFalse((root / "home/.profile").exists())
+            self.assertFalse((root / "install-bin").exists())
 
     def test_per_platform_checksum_allows_verified_partial_release(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp).resolve(); archive, checksum, metadata = self.package(root)
+            root = Path(tmp).resolve()
+            archive, checksum, metadata = self.package(root)
             data = json.loads(metadata)
-            data['assets'][1]['name'] = TARGET + '.sha256'
+            data["assets"][1]["name"] = TARGET + ".sha256"
             result = self.run_install(root, (archive, checksum, json.dumps(data)))
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn(TARGET + '.sha256', (root / 'requests.log').read_text())
+            self.assertIn(TARGET + ".sha256", (root / "requests.log").read_text())
 
     def test_rejects_traversal_links_and_metadata_mismatch(self):
-        for bad in ('traversal', 'symlink', 'hardlink', 'target', 'entrypoint'):
+        for bad in ("traversal", "symlink", "hardlink", "target", "entrypoint"):
             with self.subTest(bad=bad), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp).resolve(); package = self.package(root)
+                root = Path(tmp).resolve()
+                package = self.package(root)
                 archive, checksum, metadata = package
                 old, visible, current = self.old_install(root)
                 before = old.read_bytes()
-                if bad in ('target', 'entrypoint'):
-                    meta = root / 'package/codex-package.json'
-                    data = json.loads(meta.read_text()); data[bad] = 'incorrect'
-                    meta.write_text(json.dumps(data)); repack_release(root, archive)
+                if bad in ("target", "entrypoint"):
+                    meta = root / "package/codex-package.json"
+                    data = json.loads(meta.read_text())
+                    data[bad] = "incorrect"
+                    meta.write_text(json.dumps(data))
+                    repack_release(root, archive)
                 else:
                     # Add a malicious member to an otherwise complete archive.
-                    with tarfile.open(archive, 'r:gz') as source:
-                        members = [(m, source.extractfile(m).read() if m.isfile() else None) for m in source]
-                    with tarfile.open(archive, 'w:gz') as dest:
-                        for member, data in members: dest.addfile(member, io.BytesIO(data) if data is not None else None)
-                        entry = tarfile.TarInfo('../../escape' if bad == 'traversal' else 'bad-link')
-                        if bad != 'traversal':
-                            entry.type = tarfile.SYMTYPE if bad == 'symlink' else tarfile.LNKTYPE
-                            entry.linkname = '../../escape'
+                    with tarfile.open(archive, "r:gz") as source:
+                        members = [
+                            (m, source.extractfile(m).read() if m.isfile() else None)
+                            for m in source
+                        ]
+                    with tarfile.open(archive, "w:gz") as dest:
+                        for member, data in members:
+                            dest.addfile(
+                                member, io.BytesIO(data) if data is not None else None
+                            )
+                        entry = tarfile.TarInfo(
+                            "../../escape" if bad == "traversal" else "bad-link"
+                        )
+                        if bad != "traversal":
+                            entry.type = (
+                                tarfile.SYMTYPE if bad == "symlink" else tarfile.LNKTYPE
+                            )
+                            entry.linkname = "../../escape"
                         dest.addfile(entry)
                 metadata = refresh_release_digests(archive, checksum, metadata)
                 result = self.run_install(root, (archive, checksum, metadata))
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertEqual(old.read_bytes(), before)
                 self.assertEqual(visible.resolve(), old)
-                self.assertFalse((root / 'escape').exists())
-                self.assertFalse(list(current.parent.joinpath("releases").glob(".staging.*")))
+                self.assertFalse((root / "escape").exists())
+                self.assertFalse(
+                    list(current.parent.joinpath("releases").glob(".staging.*"))
+                )
 
     def test_entrypoint_failure_restores_same_version_bytes_and_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp).resolve(); package = self.package(root)
-            old, visible, current = self.old_install(root); before = old.read_bytes()
-            history = current.parent / 'selection-history'
-            history.write_text(old.parent.parent.name + '\nprevious-release\nstale identity\n')
-            (root / 'home').mkdir(); profile = root / 'home/.profile'; profile.write_text('# preserve profile\n')
+            root = Path(tmp).resolve()
+            package = self.package(root)
+            old, visible, current = self.old_install(root)
+            before = old.read_bytes()
+            history = current.parent / "selection-history"
+            history.write_text(
+                old.parent.parent.name + "\nprevious-release\nstale identity\n"
+            )
+            (root / "home").mkdir()
+            profile = root / "home/.profile"
+            profile.write_text("# preserve profile\n")
             # A real failed filesystem operation after release validation and commit.
-            (root / 'bin').mkdir()
-            write_executable(root / 'bin/ln', f'''#!/bin/sh
+            (root / "bin").mkdir()
+            write_executable(
+                root / "bin/ln",
+                f'''#!/bin/sh
 case "$*" in *install-bin*) if [ ! -f "{root}/failed-once" ]; then touch "{root}/failed-once"; exit 73; fi ;; esac
 exec /bin/ln "$@"
-''')
+''',
+            )
             result = self.run_install(root, package)
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertEqual(old.read_bytes(), before)
-            self.assertEqual(profile.read_text(), '# preserve profile\n')
+            self.assertEqual(profile.read_text(), "# preserve profile\n")
             self.assertEqual(current.resolve(), old.parent.parent)
             self.assertEqual(visible.resolve(), old)
-            self.assertFalse((current.parent / '.transaction').exists())
-            self.assertEqual(int(history.read_text().splitlines()[2].split()[1]), os.lstat(current).st_ino)
+            self.assertFalse((current.parent / ".transaction").exists())
+            self.assertEqual(
+                int(history.read_text().splitlines()[2].split()[1]),
+                os.lstat(current).st_ino,
+            )
 
     def test_recovery_of_interrupted_selection_precedes_next_install(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp).resolve(); package = self.package(root)
+            root = Path(tmp).resolve()
+            package = self.package(root)
             old, visible, current = self.old_install(root)
-            tx = current.parent / '.transaction'; tx.mkdir()
-            (tx / 'current.path').write_text(str(current) + '\n')
-            (tx / 'current.link').write_text(str(old.parent.parent) + '\n')
-            current.unlink(); current.symlink_to('/nonexistent/interrupted-release')
+            tx = current.parent / ".transaction"
+            tx.mkdir()
+            (tx / "current.path").write_text(str(current) + "\n")
+            (tx / "current.link").write_text(str(old.parent.parent) + "\n")
+            current.unlink()
+            current.symlink_to("/nonexistent/interrupted-release")
             result = self.run_install(root, package)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn('Recovering an interrupted', result.stderr)
-            self.assertEqual(subprocess.check_output([str(visible), '--version'], text=True).strip(), f'codefx {VERSION}')
+            self.assertIn("Recovering an interrupted", result.stderr)
+            self.assertEqual(
+                subprocess.check_output([str(visible), "--version"], text=True).strip(),
+                f"codefx {VERSION}",
+            )
 
     def test_official_version_cache_is_migrated_and_restored_on_failure(self):
         for fail in (False, True):
             with self.subTest(fail=fail), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp).resolve(); package = self.package(root)
-                old, visible, _ = self.old_install(root); before = old.read_bytes()
-                cache = root / 'codex-home/version.json'
-                cache.write_text('{"latest_version":"999.0.0","dismissed_version":"999.0.0"}')
+                root = Path(tmp).resolve()
+                package = self.package(root)
+                old, visible, _ = self.old_install(root)
+                before = old.read_bytes()
+                cache = root / "codex-home/version.json"
+                cache.write_text(
+                    '{"latest_version":"999.0.0","dismissed_version":"999.0.0"}'
+                )
                 original = cache.read_text()
                 if fail:
-                    (root / 'bin').mkdir()
-                    write_executable(root / 'bin/mv', f"""#!/bin/sh
+                    (root / "bin").mkdir()
+                    write_executable(
+                        root / "bin/mv",
+                        f"""#!/bin/sh
 case "$*" in *codefx-update-source.tmp*) if [ ! -f '{root}/failed-cache-once' ]; then touch '{root}/failed-cache-once'; exit 73; fi ;; esac
 exec /bin/mv "$@"
-""")
+""",
+                    )
                 result = self.run_install(root, package)
                 self.assertEqual(result.returncode == 0, not fail, result.stderr)
                 if fail:
@@ -145,73 +201,117 @@ exec /bin/mv "$@"
                     self.assertEqual(old.read_bytes(), before)
                 else:
                     self.assertFalse(cache.exists())
-                    marker = root / 'codex-home/packages/standalone/codefx-update-source'
-                    self.assertEqual(marker.read_text().strip(), 'hitmux/codefx')
+                    marker = (
+                        root / "codex-home/packages/standalone/codefx-update-source"
+                    )
+                    self.assertEqual(marker.read_text().strip(), "hitmux/codefx")
                     cache.write_text('{"dismissed_version":"0.165.0"}')
                     again = self.run_install(root, package)
                     self.assertEqual(again.returncode, 0, again.stderr)
-                    self.assertEqual(cache.read_text(), '{"dismissed_version":"0.165.0"}')
+                    self.assertEqual(
+                        cache.read_text(), '{"dismissed_version":"0.165.0"}'
+                    )
 
     def test_committed_receipt_recovery_keeps_the_verified_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp).resolve(); package = self.package(root)
+            root = Path(tmp).resolve()
+            package = self.package(root)
             self.old_install(root)
             first = self.run_install(root, package)
             self.assertEqual(first.returncode, 0, first.stderr)
-            standalone = root / 'codex-home/packages/standalone'
-            receipt = next(standalone.glob('.rollback.*'))
-            self.assertTrue((receipt / 'committed').exists())
-            receipt.rename(standalone / '.transaction')
-            (root / 'requests.log').unlink()
+            standalone = root / "codex-home/packages/standalone"
+            receipt = next(standalone.glob(".rollback.*"))
+            self.assertTrue((receipt / "committed").exists())
+            receipt.rename(standalone / ".transaction")
+            (root / "requests.log").unlink()
             second = self.run_install(root, package)
             self.assertEqual(second.returncode, 0, second.stderr)
-            self.assertIn('committed installation', second.stdout)
-            self.assertNotIn('Downloading Codefx CLI', second.stdout)
-            requests = (root / 'requests.log').read_text().splitlines()
+            self.assertIn("committed installation", second.stdout)
+            self.assertNotIn("Downloading Codefx CLI", second.stdout)
+            requests = (root / "requests.log").read_text().splitlines()
             self.assertTrue(requests)
-            self.assertTrue(all(url.startswith('https://api.github.com/') for url in requests), requests)
+            self.assertTrue(
+                all(url.startswith("https://api.github.com/") for url in requests),
+                requests,
+            )
 
     def test_lifecycle_subprocess_does_not_inherit_the_installer_lock(self):
         prefix = INSTALL_SCRIPT.read_text().split('parse_args "$@"')[0]
         with tempfile.TemporaryDirectory() as tmp:
-            script = Path(tmp) / 'check.sh'
-            script.write_text('if ( : >&9 ) 2>/dev/null; then exit 44; fi\nexit 0\n')
-            code = prefix + f'\nexec 9>{shlex.quote(tmp + "/lock")}\ncf_run /bin/sh {shlex.quote(str(script))}\n'
-            result = subprocess.run(['/bin/sh'], input=code, capture_output=True, text=True, timeout=5)
+            script = Path(tmp) / "check.sh"
+            script.write_text("if ( : >&9 ) 2>/dev/null; then exit 44; fi\nexit 0\n")
+            code = (
+                prefix
+                + f"\nexec 9>{shlex.quote(tmp + '/lock')}\ncf_run /bin/sh {shlex.quote(str(script))}\n"
+            )
+            result = subprocess.run(
+                ["/bin/sh"], input=code, capture_output=True, text=True, timeout=5
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_process_inspection_failure_is_fail_closed(self):
         # Invoke the real helper with a failing OS process provider.
         prefix = INSTALL_SCRIPT.read_text().split('parse_args "$@"')[0]
         with tempfile.TemporaryDirectory() as tmp:
-            code = prefix + f'\ntmp_dir={shlex.quote(tmp)}\nos=darwin\nps() {{ return 9; }}\ncf_processes\n'
-            result = subprocess.run(['/bin/sh'], input=code, text=True, capture_output=True)
+            code = (
+                prefix
+                + f"\ntmp_dir={shlex.quote(tmp)}\nos=darwin\nps() {{ return 9; }}\ncf_processes\n"
+            )
+            result = subprocess.run(
+                ["/bin/sh"], input=code, text=True, capture_output=True
+            )
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn('Cannot inspect', result.stderr)
+            self.assertIn("Cannot inspect", result.stderr)
 
     def test_native_process_inventory_and_ancestor_guard(self):
         # This checks the actual native ps column format; local restricted hosts skip.
-        result = subprocess.run(['ps', '-p', str(os.getpid()), '-o', 'pid=', '-o', 'ppid=', '-o', 'comm='], capture_output=True, text=True)
-        if result.returncode: self.skipTest('runtime does not expose native process inspection')
+        result = subprocess.run(
+            ["ps", "-p", str(os.getpid()), "-o", "pid=", "-o", "ppid=", "-o", "comm="],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode:
+            self.skipTest("runtime does not expose native process inspection")
         prefix = INSTALL_SCRIPT.read_text().split('parse_args "$@"')[0]
         with tempfile.TemporaryDirectory() as tmp:
-            code = prefix + f'\ntmp_dir={shlex.quote(tmp)}\nos={"darwin" if MAC else "linux"}\ncf_processes\n'
-            result = subprocess.run(['/bin/sh'], input=code, text=True, capture_output=True)
+            code = (
+                prefix
+                + f"\ntmp_dir={shlex.quote(tmp)}\nos={'darwin' if MAC else 'linux'}\ncf_processes\n"
+            )
+            result = subprocess.run(
+                ["/bin/sh"], input=code, text=True, capture_output=True
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_daemon_migration_preserves_running_state_and_rolls_back_failure(self):
-        for fail, managed_only in ((False, False), (True, False), (False, True), (True, True)):
-            with self.subTest(fail=fail, managed_only=managed_only), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp).resolve(); archive, sums, meta = self.package(root)
-                old, visible, current = self.old_install(root); before = old.read_bytes()
-                settings = root / 'codex-home/app-server-daemon/settings.json'
-                settings.parent.mkdir(); settings.write_text('{"original":true}')
-                legacy_log = settings.parent / 'app-server.stderr.log'; legacy_log.touch()
-                state = root / 'daemon-running'; state.touch()
-                (root / 'bin').mkdir()
-                old_cli = old if managed_only else root / 'bin/codex'
-                if managed_only: visible.unlink()
-                write_executable(old_cli, f"""#!/bin/sh
+        for fail, managed_only in (
+            (False, False),
+            (True, False),
+            (False, True),
+            (True, True),
+        ):
+            with (
+                self.subTest(fail=fail, managed_only=managed_only),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                root = Path(tmp).resolve()
+                archive, sums, meta = self.package(root)
+                old, visible, current = self.old_install(root)
+                before = old.read_bytes()
+                settings = root / "codex-home/app-server-daemon/settings.json"
+                settings.parent.mkdir()
+                settings.write_text('{"original":true}')
+                legacy_log = settings.parent / "app-server.stderr.log"
+                legacy_log.touch()
+                state = root / "daemon-running"
+                state.touch()
+                (root / "bin").mkdir()
+                old_cli = old if managed_only else root / "bin/codex"
+                if managed_only:
+                    visible.unlink()
+                write_executable(
+                    old_cli,
+                    f"""#!/bin/sh
 case "$*" in
   --version) echo 'codex-cli 0.163.0' ;;
   *'daemon version') echo '{{"status":"running","appServerVersion":"0.163.0"}}' ;;
@@ -219,54 +319,79 @@ case "$*" in
   *'daemon start') touch {shlex.quote(str(state))} ;;
   *) exit 1 ;;
 esac
-""")
-                new_cli = root / 'package/bin/codex'
-                write_executable(new_cli, f"""#!/bin/sh
+""",
+                )
+                new_cli = root / "package/bin/codex"
+                write_executable(
+                    new_cli,
+                    f"""#!/bin/sh
 case "$*" in
   --version) echo 'codefx {VERSION}' ;;
-  *'daemon update --from-cli --yes') {'exit 71' if fail else ':'} ;;
+  *'daemon update --from-cli --yes') {"exit 71" if fail else ":"} ;;
   *'daemon version') echo '{{"status":"running","appServerVersion":"{VERSION}"}}' ;;
   *'daemon stop') rm -f {shlex.quote(str(state))} ;;
   *'daemon start') touch {shlex.quote(str(state))} ;;
   *) exit 1 ;;
 esac
-""")
-                repack_release(root, archive); meta = refresh_release_digests(archive, sums, meta)
+""",
+                )
+                repack_release(root, archive)
+                meta = refresh_release_digests(archive, sums, meta)
                 before = old.read_bytes()
-                restricted_path = str(root / 'bin') + ':/usr/bin:/bin:/usr/sbin:/sbin'
-                result = self.run_install(root, (archive, sums, meta), arguments=('--stop-running',),
-                                          extra_env={'PATH': restricted_path} if managed_only else None)
+                restricted_path = str(root / "bin") + ":/usr/bin:/bin:/usr/sbin:/sbin"
+                result = self.run_install(
+                    root,
+                    (archive, sums, meta),
+                    arguments=("--stop-running",),
+                    extra_env={"PATH": restricted_path} if managed_only else None,
+                )
                 self.assertEqual(result.returncode == 0, not fail, result.stderr)
-                self.assertTrue(state.exists(), 'Originally running daemon was not restored')
+                self.assertTrue(
+                    state.exists(), "Originally running daemon was not restored"
+                )
                 self.assertEqual(settings.read_text(), '{"original":true}')
                 if fail:
                     self.assertEqual(old.read_bytes(), before)
-                    if managed_only: self.assertFalse(visible.exists())
-                    else: self.assertEqual(visible.resolve(), old.resolve())
+                    if managed_only:
+                        self.assertFalse(visible.exists())
+                    else:
+                        self.assertEqual(visible.resolve(), old.resolve())
                 else:
-                    self.assertEqual(subprocess.check_output([str(visible), '--version'], text=True).strip(), f'codefx {VERSION}')
+                    self.assertEqual(
+                        subprocess.check_output(
+                            [str(visible), "--version"], text=True
+                        ).strip(),
+                        f"codefx {VERSION}",
+                    )
 
     def test_active_session_and_ancestor_are_rejected_before_mutation(self):
         prefix = INSTALL_SCRIPT.read_text().split('parse_args "$@"')[0]
         for stop in (0, 1):
             with self.subTest(stop=stop), tempfile.TemporaryDirectory() as tmp:
-                code = prefix + f"""
+                code = (
+                    prefix
+                    + f"""
 tmp_dir={shlex.quote(tmp)}
 STANDALONE_ROOT="$tmp_dir/install"
 CF_STOP_RUNNING={stop}
 ps() {{ printf '%s %s S codex\\n' "$$" "$PPID"; }}
 cf_prepare
 """
-                result = subprocess.run(['/bin/sh'], input=code, capture_output=True, text=True)
+                )
+                result = subprocess.run(
+                    ["/bin/sh"], input=code, capture_output=True, text=True
+                )
                 self.assertNotEqual(result.returncode, 0)
-                self.assertFalse((Path(tmp) / 'install').exists())
-                self.assertIn('ancestor' if stop else 'Codex is running', result.stderr)
+                self.assertFalse((Path(tmp) / "install").exists())
+                self.assertIn("ancestor" if stop else "Codex is running", result.stderr)
 
     def test_install_lock_has_a_bounded_wait(self):
         prefix = INSTALL_SCRIPT.read_text().split('parse_args "$@"')[0]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            code = prefix + f"""
+            code = (
+                prefix
+                + f"""
 STANDALONE_ROOT={shlex.quote(tmp)}
 LOCK_DIR="$STANDALONE_ROOT/install.lock.d"
 LOCK_FILE="$STANDALONE_ROOT/install.lock"
@@ -279,36 +404,49 @@ printf '%s\\n' "$$" > "$LOCK_DIR/pid"
 date +%s > "$LOCK_DIR/started_at"
 acquire_install_lock
 """
-            result = subprocess.run(['/bin/sh'], input=code, capture_output=True, text=True, timeout=5)
+            )
+            result = subprocess.run(
+                ["/bin/sh"], input=code, capture_output=True, text=True, timeout=5
+            )
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn('lock timed out', result.stderr)
+            self.assertIn("lock timed out", result.stderr)
 
     def test_fresh_unpublished_directory_lock_is_not_stolen(self):
         prefix = INSTALL_SCRIPT.read_text().split('parse_args "$@"')[0]
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp); lock = root / 'install.lock.d'; lock.mkdir()
-            code = prefix + f'''
+            root = Path(tmp)
+            lock = root / "install.lock.d"
+            lock.mkdir()
+            code = (
+                prefix
+                + f"""
 STANDALONE_ROOT={shlex.quote(tmp)}
 LOCK_DIR="$STANDALONE_ROOT/install.lock.d"
 LOCK_FILE="$STANDALONE_ROOT/install.lock"
 CF_LOCK_TIMEOUT=1
 command() {{ case "${{2:-}}" in flock|lockf) return 1 ;; esac; command "$@"; }}
 acquire_install_lock
-'''
-            result = subprocess.run(['/bin/sh'], input=code, capture_output=True, text=True, timeout=5)
+"""
+            )
+            result = subprocess.run(
+                ["/bin/sh"], input=code, capture_output=True, text=True, timeout=5
+            )
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn('lock timed out', result.stderr)
+            self.assertIn("lock timed out", result.stderr)
             self.assertTrue(lock.is_dir())
-            self.assertFalse((lock / 'pid').exists())
+            self.assertFalse((lock / "pid").exists())
 
-    @unittest.skipUnless(shutil.which('flock'), 'Requires native flock')
+    @unittest.skipUnless(shutil.which("flock"), "Requires native flock")
     def test_flock_without_wait_option_coordinates_on_the_rust_lock_file(self):
         import fcntl
+
         prefix = INSTALL_SCRIPT.read_text().split('parse_args "$@"')[0]
         with tempfile.TemporaryDirectory() as tmp:
-            with open(Path(tmp) / 'install.lock', 'w') as held:
+            with open(Path(tmp) / "install.lock", "w") as held:
                 fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                code = prefix + f'''
+                code = (
+                    prefix
+                    + f"""
 STANDALONE_ROOT={shlex.quote(tmp)}
 LOCK_DIR="$STANDALONE_ROOT/install.lock.d"
 LOCK_FILE="$STANDALONE_ROOT/install.lock"
@@ -316,29 +454,38 @@ os=linux
 CF_LOCK_TIMEOUT=1
 flock() {{ [ "$1" != --help ] || return 1; command flock "$@"; }}
 acquire_install_lock
-'''
-                result = subprocess.run(['/bin/sh'], input=code, capture_output=True, text=True, timeout=5)
+"""
+                )
+                result = subprocess.run(
+                    ["/bin/sh"], input=code, capture_output=True, text=True, timeout=5
+                )
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn('lock timed out', result.stderr)
-                self.assertFalse((Path(tmp) / 'install.lock.d').exists())
+                self.assertIn("lock timed out", result.stderr)
+                self.assertFalse((Path(tmp) / "install.lock.d").exists())
 
     def test_symlinked_shell_profile_is_updated_and_failure_restores_target(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp).resolve(); package = self.package(root)
+            root = Path(tmp).resolve()
+            package = self.package(root)
             self.old_install(root)
-            home = root / 'home'; home.mkdir()
-            target = home / 'dotfiles.profile'; target.write_text('# my dotfiles\n')
-            profile = home / '.profile'; profile.symlink_to(target.name)
+            home = root / "home"
+            home.mkdir()
+            target = home / "dotfiles.profile"
+            target.write_text("# my dotfiles\n")
+            profile = home / ".profile"
+            profile.symlink_to(target.name)
             result = self.run_install(root, package)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(profile.is_symlink())
-            self.assertIn('# my dotfiles', target.read_text())
-            self.assertIn('Codex installer', target.read_text())
+            self.assertIn("# my dotfiles", target.read_text())
+            self.assertIn("Codex installer", target.read_text())
 
     def test_linux_proc_fallback_recognizes_native_package_names(self):
         prefix = INSTALL_SCRIPT.read_text().split('parse_args "$@"')[0]
         with tempfile.TemporaryDirectory() as tmp:
-            code = prefix + f"""
+            code = (
+                prefix
+                + f"""
 tmp_dir={shlex.quote(tmp)}
 mkdir -p "$tmp_dir/proc/$$"
 printf '%s (codex-x86_64-native) S 1 0 0 0 0 0\\n' "$$" > "$tmp_dir/proc/$$/stat"
@@ -346,16 +493,22 @@ printf 'Uid:\\t%s\\t%s\\n' "$(id -u)" "$(id -u)" > "$tmp_dir/proc/$$/status"
 cf_proc_inventory "$tmp_dir/proc"
 grep codex-x86_64-native "$tmp_dir/processes"
 """
-            result = subprocess.run(['/bin/sh'], input=code, capture_output=True, text=True)
+            )
+            result = subprocess.run(
+                ["/bin/sh"], input=code, capture_output=True, text=True
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_stop_running_requests_normal_exit_of_native_fixture(self):
-        compiler = shutil.which('cc')
-        if not compiler: self.skipTest('native C compiler unavailable')
+        compiler = shutil.which("cc")
+        if not compiler:
+            self.skipTest("native C compiler unavailable")
         prefix = INSTALL_SCRIPT.read_text().split('parse_args "$@"')[0]
-        with tempfile.TemporaryDirectory(prefix='codefx native process ') as tmp:
+        with tempfile.TemporaryDirectory(prefix="codefx native process ") as tmp:
             root = Path(tmp).resolve()
-            source = root / 'fixture.c'; binary = root / 'codex-fixture'; marker = root / 'closed'
+            source = root / "fixture.c"
+            binary = root / "codex-fixture"
+            marker = root / "closed"
             source.write_text(r"""
 #include <signal.h>
 #include <stdio.h>
@@ -369,16 +522,27 @@ int main(int argc, char **argv) {
   for (;;) pause();
 }
 """)
-            subprocess.run([compiler, str(source), '-o', str(binary)], check=True, capture_output=True)
-            proc = subprocess.Popen([str(binary), str(marker)], stdout=subprocess.PIPE, text=True)
+            subprocess.run(
+                [compiler, str(source), "-o", str(binary)],
+                check=True,
+                capture_output=True,
+            )
+            proc = subprocess.Popen(
+                [str(binary), str(marker)], stdout=subprocess.PIPE, text=True
+            )
             try:
-                self.assertEqual(proc.stdout.readline().strip(), 'ready')
-                check = subprocess.run(['ps', '-p', str(proc.pid), '-o', 'pid='], capture_output=True)
-                if check.returncode: self.skipTest('runtime process namespace is not inspectable')
-                code = prefix + f"""
+                self.assertEqual(proc.stdout.readline().strip(), "ready")
+                check = subprocess.run(
+                    ["ps", "-p", str(proc.pid), "-o", "pid="], capture_output=True
+                )
+                if check.returncode:
+                    self.skipTest("runtime process namespace is not inspectable")
+                code = (
+                    prefix
+                    + f"""
 tmp_dir={shlex.quote(str(root))}
 HOME="$tmp_dir/home"; mkdir "$HOME"
-os={'darwin' if MAC else 'linux'}
+os={"darwin" if MAC else "linux"}
 CODEX_HOME_DIR="$HOME/.codex"; STANDALONE_ROOT="$CODEX_HOME_DIR/packages/standalone"
 mkdir -p "$STANDALONE_ROOT"
 CURRENT_LINK="$STANDALONE_ROOT/current"; AUTO_UPDATE_VERSION="$STANDALONE_ROOT/auto-update-version"
@@ -391,19 +555,27 @@ cf_processes() {{
 }}
 cf_prepare
 """
-                result = subprocess.run(['/bin/sh'], input=code, capture_output=True, text=True, timeout=10)
+                )
+                result = subprocess.run(
+                    ["/bin/sh"], input=code, capture_output=True, text=True, timeout=10
+                )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(proc.wait(timeout=3), 0)
-                self.assertEqual(marker.read_text(), 'closed')
+                self.assertEqual(marker.read_text(), "closed")
             finally:
-                if proc.poll() is None: proc.terminate(); proc.wait(timeout=3)
+                if proc.poll() is None:
+                    proc.terminate()
+                    proc.wait(timeout=3)
                 proc.stdout.close()
 
     def test_bounded_command_does_not_hang(self):
         prefix = INSTALL_SCRIPT.read_text().split('parse_args "$@"')[0]
         code = prefix + '\nCF_TIMEOUT=1\ncf_run /bin/sh -c "exec sleep 60"\n'
-        result = subprocess.run(['/bin/sh'], input=code, text=True, capture_output=True, timeout=8)
+        result = subprocess.run(
+            ["/bin/sh"], input=code, text=True, capture_output=True, timeout=8
+        )
         self.assertNotEqual(result.returncode, 0)
 
 
-if __name__ == '__main__': unittest.main()
+if __name__ == "__main__":
+    unittest.main()

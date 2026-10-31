@@ -141,11 +141,8 @@ impl ThreadLifecycleContributor<Config> for PluginContributor {
     ) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             let state = input.thread_store.get_or_init(PluginsThreadState::default);
-            {
-                let mut state = state.contributor_state();
-                state.plugins_enabled = input.config.features.enabled(Feature::Plugins);
-                state.extension_metrics = input.extension_metrics;
-            }
+            state.contributor_state().plugins_enabled =
+                input.config.features.enabled(Feature::Plugins);
             if let Some(resources) = &input.mcp_resource_client {
                 input.session_store.insert(resources.as_ref().clone());
             }

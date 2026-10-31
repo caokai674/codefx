@@ -1403,7 +1403,7 @@ mod tests {
             execution_mode: HookExecutionMode::Sync,
             builtin: false,
             scope: HookScope::Turn,
-            source_path: test_path_buf("/tmp/hooks.json").abs().into(),
+            source_path: test_path_buf("/tmp/hooks.json").abs(),
             source,
             display_order: 0,
             status,

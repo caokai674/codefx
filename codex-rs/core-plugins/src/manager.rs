@@ -61,7 +61,6 @@ use crate::marketplace_upgrade::ConfiguredMarketplaceUpgradeError;
 use crate::marketplace_upgrade::ConfiguredMarketplaceUpgradeOutcome;
 use crate::marketplace_upgrade::upgrade_configured_git_marketplaces_with_mode;
 use crate::remote::CODEX_PRODUCT_SKU;
-use crate::remote::InstalledPluginDisplayAssets;
 use crate::remote::REMOTE_GLOBAL_MARKETPLACE_NAME;
 use crate::remote::RecommendedPluginsMode;
 use crate::remote::RemoteInstalledPlugin;
@@ -281,11 +280,10 @@ struct RemoteInstalledPluginsCache {
     // A cancelled pass may mutate bundles before publication; retry must notify consumers.
     needs_effective_plugins_refresh: bool,
     plugins: Option<Vec<RemoteInstalledPlugin>>,
-    display_assets: InstalledPluginDisplayAssets,
 }
 
 enum RemoteInstalledPluginsCachePublication {
-    Refresh(InstalledPluginDisplayAssets),
+    Refresh,
     Reconcile,
 }
 
@@ -1250,23 +1248,10 @@ impl PluginsManager {
         &self,
         visible_marketplaces: &[&str],
     ) -> Option<Vec<crate::remote::RemoteMarketplace>> {
-        self.build_remote_installed_plugin_marketplaces_from_cache_with_display_assets(
-            visible_marketplaces,
-            InstalledPluginDisplayAssets::Include,
-        )
-    }
-
-    /// A runtime snapshot cannot satisfy a caller that requires display enrichment.
-    pub fn build_remote_installed_plugin_marketplaces_from_cache_with_display_assets(
-        &self,
-        visible_marketplaces: &[&str],
-        display_assets: InstalledPluginDisplayAssets,
-    ) -> Option<Vec<crate::remote::RemoteMarketplace>> {
         let auth = self.auth_manager.auth_cached();
         self.build_remote_installed_plugin_marketplaces_from_cache_for_auth(
             auth.as_ref(),
             visible_marketplaces,
-            display_assets,
         )
     }
 
@@ -1274,7 +1259,6 @@ impl PluginsManager {
         &self,
         auth: Option<&CodexAuth>,
         visible_marketplaces: &[&str],
-        display_assets: InstalledPluginDisplayAssets,
     ) -> Option<Vec<crate::remote::RemoteMarketplace>> {
         let cache = match self.remote_installed_plugins_cache.read() {
             Ok(cache) => cache,
@@ -1282,11 +1266,6 @@ impl PluginsManager {
         };
         if cache.auth_identity.as_ref()
             != Some(&RemoteInstalledPluginsAuthIdentity::from_auth(auth))
-        {
-            return None;
-        }
-        if display_assets == InstalledPluginDisplayAssets::Include
-            && cache.display_assets == InstalledPluginDisplayAssets::Skip
         {
             return None;
         }
@@ -1331,32 +1310,12 @@ impl PluginsManager {
         visible_marketplaces: &[&str],
         on_effective_plugins_changed: Option<EffectivePluginsChangedCallback>,
     ) -> Result<Vec<crate::remote::RemoteMarketplace>, RemotePluginCatalogError> {
-        self.build_and_cache_remote_installed_plugin_marketplaces_with_display_assets(
-            config,
-            auth,
-            visible_marketplaces,
-            on_effective_plugins_changed,
-            InstalledPluginDisplayAssets::Include,
-        )
-        .await
-    }
-
-    /// Fetch installed runtime metadata without optional display enrichment.
-    pub async fn build_and_cache_remote_installed_plugin_marketplaces_with_display_assets(
-        &self,
-        config: &PluginsConfigInput,
-        auth: Option<&CodexAuth>,
-        visible_marketplaces: &[&str],
-        on_effective_plugins_changed: Option<EffectivePluginsChangedCallback>,
-        display_assets: InstalledPluginDisplayAssets,
-    ) -> Result<Vec<crate::remote::RemoteMarketplace>, RemotePluginCatalogError> {
         let generation = self
             .prepare_remote_installed_plugins_cache_generation(auth)
             .ok_or(RemotePluginCatalogError::AuthRequired)?;
-        let plugins = crate::remote::fetch_remote_installed_plugins_with_display_assets(
+        let plugins = crate::remote::fetch_remote_installed_plugins(
             &remote_plugin_service_config(config),
             auth,
-            display_assets,
         )
         .await?;
         let marketplaces = crate::remote::group_remote_installed_plugins_by_marketplaces(
@@ -1367,7 +1326,7 @@ impl PluginsManager {
             generation,
             plugins,
             auth,
-            RemoteInstalledPluginsCachePublication::Refresh(display_assets),
+            RemoteInstalledPluginsCachePublication::Refresh,
         ) else {
             let auth_identity = RemoteInstalledPluginsAuthIdentity::from_auth(auth);
             if !self.remote_installed_plugins_auth_is_current(&auth_identity) {
@@ -1377,7 +1336,6 @@ impl PluginsManager {
                 .build_remote_installed_plugin_marketplaces_from_cache_for_auth(
                     auth,
                     visible_marketplaces,
-                    display_assets,
                 )
                 .unwrap_or(marketplaces));
         };
@@ -1388,7 +1346,6 @@ impl PluginsManager {
             .build_remote_installed_plugin_marketplaces_from_cache_for_auth(
                 auth,
                 visible_marketplaces,
-                display_assets,
             )
             .unwrap_or(marketplaces))
     }
@@ -1506,12 +1463,6 @@ impl PluginsManager {
         }
         let needs_effective_plugins_refresh =
             is_reconcile && std::mem::take(&mut cache.needs_effective_plugins_refresh);
-        cache.display_assets = match publication {
-            RemoteInstalledPluginsCachePublication::Refresh(display_assets) => display_assets,
-            RemoteInstalledPluginsCachePublication::Reconcile => {
-                InstalledPluginDisplayAssets::Include
-            }
-        };
         if cache.plugins.as_ref() == Some(&plugins) {
             drop(cache);
             if needs_effective_plugins_refresh {
@@ -1541,7 +1492,7 @@ impl PluginsManager {
             generation,
             plugins,
             auth.as_ref(),
-            RemoteInstalledPluginsCachePublication::Refresh(InstalledPluginDisplayAssets::Include),
+            RemoteInstalledPluginsCachePublication::Refresh,
         )
         .expect("test cache generation should remain current")
     }
@@ -3431,9 +3382,7 @@ impl PluginsManager {
                         request.generation,
                         plugins,
                         request.auth.as_ref(),
-                        RemoteInstalledPluginsCachePublication::Refresh(
-                            InstalledPluginDisplayAssets::Include,
-                        ),
+                        RemoteInstalledPluginsCachePublication::Refresh,
                     ) else {
                         continue;
                     };

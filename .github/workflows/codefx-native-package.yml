@@ -2,29 +2,29 @@ name: Codefx native package
 on:
   workflow_call:
     inputs:
-      tag: {type: string, required: true}
-      target: {type: string, required: true}
-      runner: {type: string, required: true}
-      reuse_only: {type: boolean, required: false, default: false}
+      tag: { type: string, required: true }
+      target: { type: string, required: true }
+      runner: { type: string, required: true }
+      reuse_only: { type: boolean, required: false, default: false }
 permissions:
   contents: read
 jobs:
   build:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 180
-    permissions: {contents: read, actions: read}
+    permissions: { contents: read, actions: read }
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
     env:
       TARGET: ${{ inputs.target }}
       RELEASE_TAG: ${{ inputs.tag }}
       REUSE_ONLY: ${{ inputs.reuse_only }}
-      CARGO_BUILD_JOBS: '2'
-      CARGO_PROFILE_RELEASE_DEBUG: '0'
-      CARGO_PROFILE_RELEASE_LTO: 'false'
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
-      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
-      AWS_LC_SYS_NO_JITTER_ENTROPY: '1'
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      AWS_LC_SYS_NO_JITTER_ENTROPY: "1"
       CODEX_REPO_ROOT: ${{ github.workspace }}
       GH_TOKEN: ${{ github.token }}
     defaults:
@@ -32,9 +32,9 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with: {persist-credentials: false}
+        with: { persist-credentials: false }
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
-        with: {python-version: '3.12'}
+        with: { python-version: "3.12" }
       - name: Preserve release helper and validate input
         run: |
           set -euo pipefail
@@ -77,7 +77,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8
         if: steps.prepare.outputs.reuse != 'true'
         with:
-          toolchain: '1.99.1'
+          toolchain: "1.99.1"
           targets: ${{ inputs.target }}
       - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7
         if: steps.prepare.outputs.reuse != 'true'
@@ -90,7 +90,7 @@ jobs:
           restore-keys: codefx-native-${{ inputs.target }}-v1-
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         if: runner.os == 'Linux' && steps.prepare.outputs.reuse != 'true'
-        with: {version: 0.14.0, use-cache: false}
+        with: { version: 0.14.0, use-cache: false }
       - name: Prepare Linux native dependencies
         if: runner.os == 'Linux' && steps.prepare.outputs.reuse != 'true'
         run: bash .github/scripts/install-musl-build-tools.sh
@@ -141,7 +141,7 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-24.04
-    permissions: {contents: write, actions: write}
+    permissions: { contents: write, actions: write }
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.tag }}

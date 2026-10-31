@@ -999,6 +999,29 @@ function Test-CodefxGuardedUpdate {
     return $env:CODEX_INSTALL_IF_LATEST -eq '1' -or $env:CODEX_INSTALL_IF_CURRENT -eq '1' -or $daemonOnly -or $oldUpdaterParent
 }
 
+$script:UpdateParentPid = 0L
+$script:UpdateContextValid = $false
+function Test-CodefxSelfUpdateContext {
+    if ($env:CODEX_UPDATE_PROTOCOL -cne '1') { return $true }
+    $pidValue = 0L
+    $token = [string]$env:CODEX_UPDATE_TOKEN
+    $tokenFile = [string]$env:CODEX_UPDATE_TOKEN_FILE
+    if (-not [long]::TryParse([string]$env:CODEX_UPDATE_PARENT_PID, [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$pidValue) -or $pidValue -le 0) { return $false }
+    if ($token -notmatch '^[0-9a-fA-F]{64}$' -or [string]::IsNullOrWhiteSpace($tokenFile) -or -not [IO.Path]::IsPathRooted($tokenFile) -or -not (Test-Path -LiteralPath $tokenFile -PathType Leaf)) { return $false }
+    try {
+        $fileToken = [IO.File]::ReadAllText($tokenFile).Trim()
+        Remove-Item -LiteralPath $tokenFile -Force -ErrorAction SilentlyContinue
+    } catch { return $false }
+    if ($fileToken -cne ("{0}:{1}" -f $pidValue, $token)) { return $false }
+    $script:UpdateParentPid = $pidValue
+    $script:UpdateContextValid = $true
+    return $true
+}
+
+if ($env:CODEX_UPDATE_PROTOCOL -eq '1' -and -not (Test-CodefxSelfUpdateContext)) {
+    throw 'Invalid or expired Codex self-update context; refusing to bypass active-session checks.'
+}
+
 function Invoke-CodefxBounded {
     param([string]$File, [string[]]$Arguments)
     # ProcessStartInfo.ArgumentList is unavailable in Windows PowerShell 5.1.
@@ -1054,6 +1077,7 @@ function Get-CodefxProcesses {
     $all = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'codex%.exe' OR Name LIKE 'codefx%.exe'" -OperationTimeoutSec ([uint32][Math]::Min(30, $ProcessTimeout)) -ErrorAction Stop)
     foreach ($entry in $all) {
         if ($entry.Name -notmatch '^(codex|codefx)([-_.].*)?\.exe$') { continue }
+        if ($script:UpdateContextValid -and [long]$entry.ProcessId -eq $script:UpdateParentPid) { continue }
         $owner = Invoke-CimMethod -InputObject $entry -MethodName GetOwnerSid -ErrorAction Stop
         if ($owner.ReturnValue -ne 0) { throw "Cannot inspect ownership of Codex PID $($entry.ProcessId)." }
         if ($owner.Sid -eq $identity) { $entry }
@@ -1077,7 +1101,8 @@ function Assert-CodefxOutsideActiveAncestor {
         if (-not $visited.Add($ancestor) -or $visited.Count -gt 128 -or $ancestryWatch.Elapsed.TotalSeconds -ge $ProcessTimeout) {
             throw "Cannot safely inspect process ancestry (cycle, reused PID, or timeout at PID $ancestor). Run from a fresh external terminal."
         }
-        if ($possibleAncestors.ProcessId -contains $ancestor) {
+        if ($possibleAncestors.ProcessId -contains $ancestor -and
+            -not ($script:UpdateContextValid -and $ancestor -eq $script:UpdateParentPid)) {
             throw 'Run the installer from an external terminal; its ancestor is Codex.'
         }
         $remaining = [uint32][Math]::Max(1, [Math]::Min(10, $ProcessTimeout - $ancestryWatch.Elapsed.TotalSeconds))

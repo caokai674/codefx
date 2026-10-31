@@ -2,12 +2,20 @@ name: Codefx publish verified native artifact
 on:
   workflow_dispatch:
     inputs:
-      source_run: {type: string, required: true, default: '40152919968'}
-      tag: {type: string, required: true, default: rust-v0.164.0}
+      source_run: { type: string, required: true, default: "40152919968" }
+      tag: { type: string, required: true, default: rust-v0.165.0 }
       target:
         type: choice
         required: true
-        options: [x86_64-pc-windows-msvc, aarch64-pc-windows-msvc, x86_64-unknown-linux-musl, aarch64-unknown-linux-musl, aarch64-apple-darwin, x86_64-apple-darwin]
+        options:
+          [
+            x86_64-pc-windows-msvc,
+            aarch64-pc-windows-msvc,
+            x86_64-unknown-linux-musl,
+            aarch64-unknown-linux-musl,
+            aarch64-apple-darwin,
+            x86_64-apple-darwin,
+          ]
 permissions:
   contents: write
   actions: write
