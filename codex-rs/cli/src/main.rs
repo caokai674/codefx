@@ -877,9 +877,7 @@ fn run_update_action(
             // this returns a .cmd/.bat shim, std::process::Command routes the
             // absolute path through the system command processor.
             let mut command = std::process::Command::new(command_path);
-            command
-                .args(args)
-                .current_dir(update_cwd.path());
+            command.args(args).current_dir(update_cwd.path());
             apply_update_context(&mut command, &update_context);
             command.status()?
         }
