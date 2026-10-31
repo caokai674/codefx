@@ -21,6 +21,35 @@ MISMATCH_VERSION = "0.145.0"
 
 
 class InstallShTest(unittest.TestCase):
+    def test_self_update_context_rejects_missing_or_forged_token(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            process = subprocess.Popen(["sleep", "60"])
+            try:
+                token_file = root / "update-token"
+                token_file.write_text("not-the-token\n", encoding="utf-8")
+                result, requests = run_installer_in(
+                    root,
+                    VERSION,
+                    extra_env={
+                        "CODEFX_TEST_ACTIVE_PID": str(process.pid),
+                        "CODEX_UPDATE_PROTOCOL": "1",
+                        "CODEX_UPDATE_PARENT_PID": str(process.pid),
+                        "CODEX_UPDATE_TOKEN": "0" * 64,
+                        "CODEX_UPDATE_TOKEN_FILE": str(token_file),
+                    },
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("Invalid or expired Codex self-update context", result.stderr)
+                self.assertTrue(
+                    all(not url.endswith((".tar.gz", ".tgz")) for url in requests),
+                    requests,
+                )
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                process.wait(timeout=5)
+
     def test_active_codex_defaults_to_preserve_and_aborts_before_archive_download(
         self,
     ) -> None:

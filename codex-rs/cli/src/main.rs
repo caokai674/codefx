@@ -42,6 +42,38 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use supports_color::Stream;
 
+/// One-shot authorization passed to the installer when `codex update` runs
+/// from the Codex process itself. The installer still inspects every other
+/// Codex process and refuses to continue if one is active.
+struct UpdateContext {
+    token: String,
+    token_file: tempfile::TempPath,
+    parent_pid: u32,
+}
+
+fn create_update_context() -> anyhow::Result<UpdateContext> {
+    let token_bytes: [u8; 32] = rand::random();
+    let token = token_bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let mut token_file = tempfile::NamedTempFile::new()?;
+    writeln!(token_file, "{}:{token}", std::process::id())?;
+    Ok(UpdateContext {
+        token,
+        token_file: token_file.into_temp_path(),
+        parent_pid: std::process::id(),
+    })
+}
+
+fn apply_update_context(command: &mut std::process::Command, context: &UpdateContext) {
+    command
+        .env("CODEX_UPDATE_PROTOCOL", "1")
+        .env("CODEX_UPDATE_PARENT_PID", context.parent_pid.to_string())
+        .env("CODEX_UPDATE_TOKEN", &context.token)
+        .env("CODEX_UPDATE_TOKEN_FILE", context.token_file.as_os_str());
+}
+
 #[cfg(all(
     target_os = "linux",
     target_env = "musl",
@@ -821,6 +853,9 @@ fn run_update_action(
     println!();
     let cmd_str = action.command_str();
     println!("Updating Codex via `{cmd_str}`...");
+    // Keep the one-shot token alive until the installer exits. It authorizes
+    // only this Codex process to be ignored by the installer's ancestor check.
+    let update_context = create_update_context()?;
     let status = {
         #[cfg(windows)]
         {
@@ -841,10 +876,12 @@ fn run_update_action(
             // Resolve through PATH without consulting the project cwd. When
             // this returns a .cmd/.bat shim, std::process::Command routes the
             // absolute path through the system command processor.
-            std::process::Command::new(command_path)
+            let mut command = std::process::Command::new(command_path);
+            command
                 .args(args)
-                .current_dir(update_cwd.path())
-                .status()?
+                .current_dir(update_cwd.path());
+            apply_update_context(&mut command, &update_context);
+            command.status()?
         }
         #[cfg(not(windows))]
         {
@@ -854,9 +891,10 @@ fn run_update_action(
                 .iter()
                 .map(crate::wsl_paths::normalize_for_wsl)
                 .collect();
-            std::process::Command::new(&command_path)
-                .args(&normalized_args)
-                .status()?
+            let mut command = std::process::Command::new(&command_path);
+            command.args(&normalized_args);
+            apply_update_context(&mut command, &update_context);
+            command.status()?
         }
     };
     if !status.success() {
