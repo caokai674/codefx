@@ -40,7 +40,9 @@ class InstallShTest(unittest.TestCase):
                     },
                 )
                 self.assertNotEqual(result.returncode, 0, result.stdout)
-                self.assertIn("Invalid or expired Codex self-update context", result.stderr)
+                self.assertIn(
+                    "Invalid or expired Codex self-update context", result.stderr
+                )
                 self.assertTrue(
                     all(not url.endswith((".tar.gz", ".tgz")) for url in requests),
                     requests,
